@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database & SQLite files
+data/*.db
+data/*.db-wal
+data/*.db-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Environment & Editor artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local testing and verification scratch scripts
+scratch/
