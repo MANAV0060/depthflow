@@ -365,10 +365,19 @@ export class FootprintSeriesPaneRenderer {
 
     // 4. Position Footprint Ladder Rows neatly between the wick tips
     const rowCount = Math.max(1, sortedCells.length);
-    const ladderTopY = upperWickTop + 5;
-    const ladderBottomY = lowerWickBottom - 5;
+    const ladderTopY = upperWickTop + 4;
+    const ladderBottomY = lowerWickBottom - 4;
     const totalH = Math.max(20, ladderBottomY - ladderTopY);
-    const rowHeight = Math.max(12, Math.floor(totalH / rowCount));
+    const calculatedRowH = Math.floor(totalH / rowCount);
+
+    // If vertical candle space is too compressed (< 10px per row), fall back cleanly
+    // to profile silhouette to eliminate unreadable text overlapping
+    if (calculatedRowH < 10) {
+      this._renderProfileSilhouette(ctx, candle, x, width, priceToCoordinate, imbalanceRatio);
+      return;
+    }
+
+    const rowHeight = Math.max(11, calculatedRowH);
     const totalLadderHeight = rowCount * rowHeight;
 
     let maxSellInCandle = 1;

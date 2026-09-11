@@ -65,6 +65,8 @@ def find_mt5_symbol(target_symbol):
         
     return clean_target
 
+import math
+
 def get_tick_size_for_symbol(symbol):
     s = symbol.upper()
     if "BTC" in s:
@@ -77,6 +79,29 @@ def get_tick_size_for_symbol(symbol):
         return 0.005
     return 0.00005 # 0.5 pip for pristine Forex footprint ladders
 
+def get_adaptive_tick_size(symbol, high_p, low_p, timeframe="1m"):
+    base_tick = get_tick_size_for_symbol(symbol)
+    tf_multipliers = {
+        "1m": 1,
+        "5m": 2,
+        "15m": 4,
+        "30m": 6,
+        "1h": 10,
+        "4h": 20,
+        "1d": 50,
+        "d": 50
+    }
+    mult = tf_multipliers.get(str(timeframe).lower(), 1)
+    tick_size = base_tick * mult
+
+    # Keep row count bounded cleanly between 10 and 22 levels per candle
+    candle_range = max(high_p - low_p, tick_size)
+    if candle_range / tick_size > 22:
+        factor = math.ceil((candle_range / 18) / base_tick)
+        tick_size = base_tick * max(mult, factor)
+
+    return tick_size
+
 def get_volume_scale_for_symbol(symbol):
     s = symbol.upper()
     if "BTC" in s:
@@ -87,36 +112,42 @@ def get_volume_scale_for_symbol(symbol):
         return 15000
     return 25000 # Standard Forex lot scale e.g. 1.5M - 3.5M
 
-def synthesize_footprint_cells(symbol, open_p, high_p, low_p, close_p, volume):
-    tick_size = get_tick_size_for_symbol(symbol)
+def synthesize_footprint_cells(symbol, open_p, high_p, low_p, close_p, volume, timeframe="1m"):
+    tick_size = get_adaptive_tick_size(symbol, high_p, low_p, timeframe)
+    decimals = 5 if tick_size < 0.005 else (2 if tick_size >= 0.1 else 3)
+
     min_p = round(low_p / tick_size) * tick_size
     max_p = round(high_p / tick_size) * tick_size
     
     levels = []
     p = min_p
     while p <= max_p + (tick_size * 0.1):
-        levels.append(round(p, 5 if tick_size < 0.1 else 2))
+        levels.append(round(p, decimals))
         p += tick_size
         
     if not levels:
-        levels = [round(close_p, 5)]
+        levels = [round(close_p, decimals)]
         
-    poc_p = round(((open_p + close_p * 2) / 3) / tick_size) * tick_size
-    poc_p = round(poc_p, 5 if tick_size < 0.1 else 2)
+    poc_raw = ((open_p + close_p * 2) / 3)
+    poc_p = round(round(poc_raw / tick_size) * tick_size, decimals)
     if poc_p not in levels:
         poc_p = levels[len(levels) // 2]
         
-    total_weight = 0
+    # Gaussian bell curve centered on POC with natural market depth variance
+    sigma = max(2.2, len(levels) / 3.4)
+    total_weight = 0.0
     weights = {}
     for lvl in levels:
         dist = abs(lvl - poc_p) / (tick_size or 1)
-        w = max(1, 12 - int(dist * 2))
+        gaussian = math.exp(-0.5 * ((dist / sigma) ** 2))
+        noise = random.uniform(0.82, 1.20)
+        w = max(0.05, gaussian * noise)
         weights[lvl] = w
         total_weight += w
         
     scale = get_volume_scale_for_symbol(symbol)
     raw_vol = int(volume or 45)
-    vol_pool = max(len(levels) * 1500, raw_vol * scale)
+    vol_pool = max(len(levels) * 12000, raw_vol * scale)
     is_bull = close_p >= open_p
     
     cells = []
@@ -125,16 +156,37 @@ def synthesize_footprint_cells(symbol, open_p, high_p, low_p, close_p, volume):
     min_delta = 0
     running_delta = 0
     
-    for lvl in sorted(levels, reverse=True):
-        lvl_vol = max(800, int((weights[lvl] / total_weight) * vol_pool))
-        if is_bull:
-            buy_ratio = 0.58 if lvl != poc_p else 0.65
+    sorted_levels = sorted(levels, reverse=True)
+    num_lvls = len(sorted_levels)
+    
+    for idx, lvl in enumerate(sorted_levels):
+        lvl_vol = max(1200, int((weights[lvl] / total_weight) * vol_pool))
+        pos = idx / max(1, num_lvls - 1)
+        
+        base_buy_ratio = 0.54 if is_bull else 0.46
+        
+        if pos < 0.15:
+            # High exhaustion / absorption
+            buy_ratio = base_buy_ratio - random.uniform(0.08, 0.18)
+        elif pos > 0.85:
+            # Low exhaustion / absorption
+            buy_ratio = base_buy_ratio + random.uniform(0.08, 0.18)
+        elif lvl == poc_p:
+            buy_ratio = 0.58 if is_bull else 0.42
         else:
-            buy_ratio = 0.42 if lvl != poc_p else 0.35
+            buy_ratio = base_buy_ratio + random.uniform(-0.08, 0.08)
             
-        buy_vol = max(300, int(lvl_vol * buy_ratio))
-        sell_vol = max(300, lvl_vol - buy_vol)
+        if random.random() < 0.12 and lvl != poc_p:
+            if is_bull:
+                buy_ratio = random.uniform(0.74, 0.85)
+            else:
+                buy_ratio = random.uniform(0.15, 0.26)
+                
+        buy_ratio = max(0.18, min(0.82, buy_ratio))
+        buy_vol = max(200, int(lvl_vol * buy_ratio))
+        sell_vol = max(200, lvl_vol - buy_vol)
         delta = buy_vol - sell_vol
+        
         running_delta += delta
         if running_delta > max_delta: max_delta = running_delta
         if running_delta < min_delta: min_delta = running_delta
@@ -185,7 +237,7 @@ def sync_and_load_candles(mt5_symbol, ui_symbol, count=1000, timeframe="1m", bef
                 vol = int(r['tick_volume'])
                 
                 cells, poc_p, total_delta, max_delta, min_delta = synthesize_footprint_cells(
-                    ui_symbol, open_p, high_p, low_p, close_p, vol
+                    ui_symbol, open_p, high_p, low_p, close_p, vol, timeframe=timeframe
                 )
                 
                 batch.append({

@@ -6,13 +6,23 @@
 
 import { AggressorSide, VolumeFidelity } from '../data/NormalizedMarketEvent.js';
 
-export function getTickSize(symbol, price) {
+export function getTickSize(symbol, price, timeframeMs = 60000) {
   const s = (symbol || '').toUpperCase();
-  if (s.includes('BTC') || price > 10000) return 5.0; // $5 buckets for BTC
-  if (s.includes('ETH') || price > 1000) return 0.5;
-  if (s.includes('XAU') || s.includes('GOLD') || price > 500) return 0.2;
-  if (s.includes('JPY')) return 0.005;
-  return 0.00005; // 0.5 pip for crisp Forex footprint ladders
+  let baseTick = 0.00005; // 0.5 pip for pristine Forex footprint ladders
+  if (s.includes('BTC') || price > 10000) baseTick = 5.0; // $5 buckets for BTC
+  else if (s.includes('ETH') || price > 1000) baseTick = 0.5;
+  else if (s.includes('XAU') || s.includes('GOLD') || price > 500) baseTick = 0.2;
+  else if (s.includes('JPY')) baseTick = 0.005;
+
+  let mult = 1;
+  if (timeframeMs >= 86400000) mult = 50;      // 1D
+  else if (timeframeMs >= 14400000) mult = 20; // 4h
+  else if (timeframeMs >= 3600000) mult = 10;  // 1h
+  else if (timeframeMs >= 1800000) mult = 6;   // 30m
+  else if (timeframeMs >= 900000) mult = 4;    // 15m
+  else if (timeframeMs >= 300000) mult = 2;    // 5m
+
+  return baseTick * mult;
 }
 
 export class FootprintCell {
@@ -82,9 +92,11 @@ export class FootprintCandle {
   }
 
   processEvent(event, aggressorResult) {
-    const tickSize = getTickSize(this.symbol, event.price);
+    const tfMs = (this.endTime - this.startTime) || 60000;
+    const tickSize = getTickSize(this.symbol, event.price, tfMs);
     const bucketPrice = Math.round(event.price / tickSize) * tickSize;
-    const normalizedBucket = Math.round(bucketPrice * 100000) / 100000;
+    const decimals = tickSize < 0.005 ? 5 : (tickSize >= 0.1 ? 2 : 3);
+    const normalizedBucket = Math.round(bucketPrice * (10 ** decimals)) / (10 ** decimals);
     const size = event.size || 1;
 
     // Update OHLC
