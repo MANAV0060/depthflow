@@ -180,12 +180,11 @@ export class MT5Adapter extends ProviderAdapter {
         }
       };
 
-      this.ws.onerror = () => {
-        if (!this.fallbackTimer) this._startFallbackStream();
+      this.ws.onerror = (e) => {
+        console.warn('[MT5Adapter] WebSocket error, awaiting reconnection...');
       };
 
       this.ws.onclose = () => {
-        if (!this.fallbackTimer) this._startFallbackStream();
         // Retry socket connection every 3 seconds
         setTimeout(() => {
           if (this.status !== ConnectionStatus.DISCONNECTED) {
@@ -195,44 +194,16 @@ export class MT5Adapter extends ProviderAdapter {
       };
 
     } catch (e) {
-      if (!this.fallbackTimer) this._startFallbackStream();
+      console.warn('[MT5Adapter] Socket initialization error', e);
     }
   }
 
   _startFallbackStream() {
-    this._setStatus(ConnectionStatus.CONNECTED);
-    if (this.fallbackTimer) clearInterval(this.fallbackTimer);
-
-    this.fallbackTimer = setInterval(() => {
-      const s = this.symbol.toUpperCase();
-      const isCrypto = s.includes('BTC') || s.includes('ETH');
-      const isGold = s.includes('XAU') || s.includes('GOLD');
-      const isJpy = s.includes('JPY');
-      const decimals = isCrypto || isGold ? 2 : (isJpy ? 3 : 5);
-      const step = s.includes('BTC') ? 2.5 : (s.includes('ETH') ? 0.5 : (isGold ? 0.2 : (isJpy ? 0.01 : 0.00005)));
-      const shift = (Math.random() - 0.495) * step;
-      const factor = Math.pow(10, decimals);
-      this.lastPrice = Math.round((this.lastPrice + shift) * factor) / factor;
-      const spread = step * 0.4;
-      const bid = Math.round((this.lastPrice - spread / 2) * factor) / factor;
-      const ask = Math.round((this.lastPrice + spread / 2) * factor) / factor;
-
-      const normEvent = new NormalizedMarketEvent({
-        symbol: this.symbol,
-        timestamp: Date.now(),
-        eventType: EventType.QUOTE_UPDATE,
-        price: this.lastPrice,
-        bid,
-        ask,
-        size: Math.floor(Math.random() * 2500) + 1200,
-        volumeFidelity: VolumeFidelity.BROKER_VOLUME,
-        dataProvenance: DataProvenance.OBSERVED,
-        aggressor: AggressorSide.UNKNOWN,
-        source: 'MT5Adapter_Live'
-      });
-
-      this._emitEvent(normEvent);
-    }, 250);
+    // Strictly no fake data: when market is closed or disconnected, do not simulate ticks
+    if (this.fallbackTimer) {
+      clearInterval(this.fallbackTimer);
+      this.fallbackTimer = null;
+    }
   }
 
   loadMoreHistory(beforeTimestamp, count = 40) {

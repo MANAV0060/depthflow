@@ -114,12 +114,39 @@ export class ChartEngine {
             bottom: 0.22
           }
         },
+        localization: {
+          timeFormatter: (originalTime) => {
+            const ts = (typeof originalTime === 'number') ? originalTime : (originalTime && originalTime.timestamp ? originalTime.timestamp : 0);
+            const d = new Date((ts + 19800) * 1000);
+            const day = String(d.getUTCDate()).padStart(2, '0');
+            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const mon = monthNames[d.getUTCMonth()];
+            const yr = String(d.getUTCFullYear()).slice(-2);
+            const hrs = String(d.getUTCHours()).padStart(2, '0');
+            const mins = String(d.getUTCMinutes()).padStart(2, '0');
+            return `${day} ${mon} '${yr}  ${hrs}:${mins}`;
+          },
+          dateFormat: 'dd MMM \'yy'
+        },
         timeScale: {
           borderColor: '#2a2e39',
           timeVisible: true,
           secondsVisible: false,
           barSpacing: 105,
-          minBarSpacing: 4
+          minBarSpacing: 4,
+          tickMarkFormatter: (time, tickMarkType, locale) => {
+            const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
+            const d = new Date((ts + 19800) * 1000);
+            const hrs = String(d.getUTCHours()).padStart(2, '0');
+            const mins = String(d.getUTCMinutes()).padStart(2, '0');
+            const day = String(d.getUTCDate()).padStart(2, '0');
+            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const mon = monthNames[d.getUTCMonth()];
+            if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
+            if (tickMarkType === 1) return `${mon}`;
+            if (tickMarkType === 2) return `${day} ${mon}`;
+            return `${hrs}:${mins}`;
+          }
         }
       });
 
@@ -289,10 +316,10 @@ export class ChartEngine {
         if (hitTrade) {
           const isBuy = hitTrade.side === 'BUY';
           const sideColor = isBuy ? '#089981' : '#F23645';
-          const title = hitTrade.fidelityLabel || (isBuy ? 'Large Buy Activity' : 'Large Sell Activity');
           const volStr = hitTrade.volume ? Number(hitTrade.volume).toLocaleString() : '--';
           const priceStr = Number(hitTrade.price).toFixed(hitTrade.price > 100 ? 2 : 5);
-          const candleTimeStr = new Date(hitCandle.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          const d = new Date(hitCandle.startTime + 19800000);
+          const candleTimeStr = `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} IST`;
 
           tooltipEl.innerHTML = `
             <div class="bt-tooltip-hdr" style="color: ${sideColor}">
@@ -785,12 +812,39 @@ export class ChartEngine {
           borderColor: isDark ? '#2a2e39' : '#e5e7eb',
           autoScale: true
         },
+        localization: {
+          timeFormatter: (originalTime) => {
+            const ts = (typeof originalTime === 'number') ? originalTime : (originalTime && originalTime.timestamp ? originalTime.timestamp : 0);
+            const d = new Date((ts + 19800) * 1000);
+            const day = String(d.getUTCDate()).padStart(2, '0');
+            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const mon = monthNames[d.getUTCMonth()];
+            const yr = String(d.getUTCFullYear()).slice(-2);
+            const hrs = String(d.getUTCHours()).padStart(2, '0');
+            const mins = String(d.getUTCMinutes()).padStart(2, '0');
+            return `${day} ${mon} '${yr}  ${hrs}:${mins}`;
+          },
+          dateFormat: 'dd MMM \'yy'
+        },
         timeScale: {
           borderColor: isDark ? '#2a2e39' : '#e5e7eb',
           timeVisible: true,
           secondsVisible: false,
           barSpacing: 6,
-          minBarSpacing: 2
+          minBarSpacing: 2,
+          tickMarkFormatter: (time, tickMarkType, locale) => {
+            const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
+            const d = new Date((ts + 19800) * 1000);
+            const hrs = String(d.getUTCHours()).padStart(2, '0');
+            const mins = String(d.getUTCMinutes()).padStart(2, '0');
+            const day = String(d.getUTCDate()).padStart(2, '0');
+            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const mon = monthNames[d.getUTCMonth()];
+            if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
+            if (tickMarkType === 1) return `${mon}`;
+            if (tickMarkType === 2) return `${day} ${mon}`;
+            return `${hrs}:${mins}`;
+          }
         }
       });
 
@@ -1582,6 +1636,7 @@ export class ChartEngine {
           <div class="live-price-num" id="livePriceNum">--</div>
           <div class="live-price-timer" id="livePriceTimer">00:00</div>
         </div>
+        <div class="tv-timezone-badge" id="chartTimezoneBadge" title="Chart Timezone: Indian Standard Time (UTC+5:30)">UTC+5:30 (Kolkata)</div>
       `;
       this.container.appendChild(overlay);
     }

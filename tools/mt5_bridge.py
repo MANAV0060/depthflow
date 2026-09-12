@@ -460,39 +460,8 @@ async def handle_client(websocket, path=None):
                 current_bar_minute = now_minute
                 # Sync last bar to SQLite
                 sync_and_load_candles(mt5_symbol, active_ui_symbol, 2, active_timeframe)
-            
-            # Weekend / market closed fallback micro-ticks
-            if not got_live_tick and (time.time() - last_sim_tick_time) > 1.5:
-                last_sim_tick_time = time.time()
-                if last_known_bid <= 0 and tick and tick.bid > 0:
-                    last_known_bid = tick.bid
-                    last_known_ask = tick.ask
-                
-                if last_known_bid > 0 and (not tick or tick.time_msc == last_tick_time):
-                    tick_step = get_tick_size_for_symbol(active_ui_symbol) * 0.5
-                    micro_shift = (random.random() - 0.49) * tick_step
-                    sim_bid = round(last_known_bid + micro_shift, 5 if last_known_bid < 500 else 2)
-                    spread = round(max(0.00008, last_known_ask - last_known_bid), 5 if last_known_bid < 500 else 2)
-                    sim_ask = round(sim_bid + spread, 5 if last_known_bid < 500 else 2)
-                    
-                    payload = {
-                        "type": "tick",
-                        "symbol": active_ui_symbol,
-                        "timestamp": int(time.time() * 1000),
-                        "bid": sim_bid,
-                        "ask": sim_ask,
-                        "price": round((sim_bid + sim_ask) / 2, 5 if sim_bid < 500 else 2),
-                        "volume": random.randint(1200, 3500),
-                        "source": "MT5_BROKER_LIVE"
-                    }
-                    await websocket.send(json.dumps(payload))
-
-                    # Process fallback tick in liquidation engine
-                    sweep_evt = liquidation_engine.process_live_tick(active_ui_symbol, payload["price"], payload["volume"])
-                    if sweep_evt:
-                        await websocket.send(json.dumps(sweep_evt))
-
-            await asyncio.sleep(0.03)
+            # No synthetic fallback ticks: never simulate fake data when real market is closed
+            await asyncio.sleep(0.05)
 
     except websockets.exceptions.ConnectionClosed:
         print("[MT5 Bridge] Client disconnected")

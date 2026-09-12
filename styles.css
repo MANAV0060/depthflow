@@ -1279,6 +1279,24 @@ body.light-theme .bt-val.source {
   opacity: 0.95;
 }
 
+.tv-timezone-badge {
+  position: absolute;
+  bottom: 5px;
+  right: 68px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #787b86;
+  background: rgba(19, 23, 34, 0.85);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  z-index: 5;
+  letter-spacing: 0.3px;
+  user-select: none;
+}
+
 /* ==========================================================================
    TPO & Market Profile UI Redesign Styles
    ========================================================================== */
