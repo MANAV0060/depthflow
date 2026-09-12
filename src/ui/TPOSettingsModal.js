@@ -15,7 +15,7 @@
 export class TPOSettingsModal {
   constructor(options = {}) {
     this.onSettingsChange = options.onSettingsChange || null;
-    this.storageKey = 'odeerflow_tpo_settings_v1';
+    this.storageKey = 'odeerflow_tpo_settings_v3';
     this.settings = this._loadSettings();
     this._initElements();
     this._bindEvents();

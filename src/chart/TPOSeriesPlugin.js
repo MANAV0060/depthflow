@@ -18,7 +18,7 @@
  * 6. Non-Destructive LOD: Underlying TPO calculation data is preserved completely.
  */
 
-import { TPO_LETTERS, getTpoColor } from '../analytics/TPOEngine.js';
+import { TPO_LETTERS, getTpoColor } from '../analytics/TPOEngine.js?v=tpo_live_v4';
 
 class LabelOcclusionManager {
   constructor() {
@@ -234,44 +234,27 @@ export class TPOSeriesPaneRenderer {
     const densityMode = opts.densityMode || 'ADAPTIVE'; // 'ADAPTIVE' | 'COMPACT' | 'EXPANDED'
     const timeframeStr = opts.timeframeStr || '1m';
     const isMicroTf = (timeframeStr === '1m' || timeframeStr === '3m');
-    const isTpoMode = (opts.chartMode === 'TPO');
+    const isTpoMode = (opts.chartMode === 'TPO') || (typeof window !== 'undefined' && window.depthflowApp?.chartEngine?.chartMode === 'TPO');
 
     let sessionLOD = 'FULL'; // 'FULL' | 'SILHOUETTE' | 'COMPACT' | 'HISTORICAL_COMPACT'
 
-    if (isTpoMode) {
-      // FIX #1: When user selects "TPO Profile" chart mode, TPO is the primary view!
-      // Always render FULL rich market profile distribution with letter blocks and colors,
-      // even on 1m, without suppressing it into a tiny 25px strip.
+    // On 1m or in TPO Mode or EXPANDED density: always render FULL rich profile with letter blocks!
+    if (timeframeStr === '1m' || isTpoMode || densityMode === 'EXPANDED') {
       sessionLOD = 'FULL';
     } else if (densityMode === 'COMPACT') {
       sessionLOD = 'COMPACT';
-    } else if (densityMode === 'EXPANDED') {
-      sessionLOD = 'FULL';
     } else {
-      // ADAPTIVE Mode (when in Footprint or Candlestick mode with TPO overlay):
-      if (isMicroTf) {
-        // On 1m/3m in footprint/candlestick mode:
-        // Keep TPO in COMPACT contextual mode unless user zooms in heavily
-        if (currentBarSpacing >= 55) {
-          sessionLOD = 'FULL'; // Heavily zoomed in micro action
-        } else if (currentBarSpacing >= 32) {
-          sessionLOD = 'SILHOUETTE'; // Moderately zoomed in
-        } else {
-          sessionLOD = 'COMPACT'; // Normal / dense 1m view
-        }
+      // 5m, 15m, 30m, 1h, 4h, Daily: untouched!
+      if (isLatestSession) {
+        sessionLOD = (sessionSpan >= 110 || currentBarSpacing >= 20) ? 'FULL' : 'SILHOUETTE';
       } else {
-        // 5m, 15m, 30m, 1h, 4h, Daily: untouched!
-        if (isLatestSession) {
-          sessionLOD = (sessionSpan >= 110 || currentBarSpacing >= 20) ? 'FULL' : 'SILHOUETTE';
+        // Historical sessions: detect available space and crowding
+        if (sessionSpan < 95) {
+          sessionLOD = 'HISTORICAL_COMPACT';
+        } else if (sessionSpan < 190) {
+          sessionLOD = 'SILHOUETTE';
         } else {
-          // Historical sessions: detect available space and crowding
-          if (sessionSpan < 95) {
-            sessionLOD = 'HISTORICAL_COMPACT';
-          } else if (sessionSpan < 190) {
-            sessionLOD = 'SILHOUETTE';
-          } else {
-            sessionLOD = 'FULL';
-          }
+          sessionLOD = 'FULL';
         }
       }
     }
@@ -280,8 +263,8 @@ export class TPOSeriesPaneRenderer {
     // Profile Width Allocation (distinct from sessionSpan!)
     // =========================================================================
     let allocatedWidth = 0;
-    if (isTpoMode) {
-      // In TPO Profile mode: give generous width (at least 180px up to 450px)
+    if (timeframeStr === '1m' || isTpoMode) {
+      // For 1m institutional sessions or TPO mode: give generous readable width
       allocatedWidth = Math.max(180, Math.min(450, Math.floor(Math.max(sessionSpan * 0.65, sessionSpan * widthRatio))));
     } else if (sessionLOD === 'COMPACT') {
       // Sleek, compact margin strip (optional and lightweight)
@@ -341,14 +324,14 @@ export class TPOSeriesPaneRenderer {
       if (r.volume > maxVol) maxVol = r.volume;
     });
 
-    // Individual letter cell width
-    let cellWidth = Math.max(4, Math.min(14, Math.floor((tpoW - 8) / Math.max(16, maxLetters))));
+    // Individual letter cell width (scaled generously for readability)
+    let cellWidth = Math.max(4, Math.min(20, Math.floor((tpoW - 8) / Math.max(12, maxLetters))));
     if (sessionLOD === 'COMPACT' || sessionLOD === 'HISTORICAL_COMPACT') {
       cellWidth = Math.max(2, Math.floor((tpoW - 4) / Math.max(1, maxLetters)));
     }
 
     // Zoom-adaptive letter glyphs: only render glyphs when cell is sufficiently large and in full mode
-    const showLetterGlyphs = ((sessionLOD === 'FULL') || isTpoMode) && cellWidth >= 6 && rowHeight >= 6 && (opts.showLetters !== false);
+    const showLetterGlyphs = ((sessionLOD === 'FULL') || isTpoMode || timeframeStr === '1m') && cellWidth >= 6 && rowHeight >= 6 && (opts.showLetters !== false);
 
     // =========================================================================
     // 1. Session Boundary Separator (Subtle line & session date pill)
@@ -363,8 +346,8 @@ export class TPOSeriesPaneRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Date pill: show date if session has >= 80px width, or if latest, or in TPO mode
-    if (sessionSpan >= 80 || isLatestSession || isTpoMode) {
+    // Date pill: show date if session has >= 80px width, or if latest, or in TPO mode / 1m
+    if (sessionSpan >= 80 || isLatestSession || isTpoMode || timeframeStr === '1m') {
       ctx.font = '600 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
       ctx.fillStyle = isDark ? '#64748b' : '#94a3b8';
       ctx.textAlign = 'left';
@@ -397,7 +380,7 @@ export class TPOSeriesPaneRenderer {
         ctx.stroke();
 
         // IB tag only if not cramped
-        if (sessionLOD !== 'HISTORICAL_COMPACT' || isTpoMode) {
+        if (sessionLOD !== 'HISTORICAL_COMPACT' || isTpoMode || timeframeStr === '1m') {
           ctx.font = '700 7.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
           ctx.fillStyle = '#38bdf8';
           ctx.textAlign = 'right';
@@ -411,7 +394,7 @@ export class TPOSeriesPaneRenderer {
     // =========================================================================
     // 3. Render Sculpted TPO Profile Rows & Adjacent Volume Bars
     // =========================================================================
-    const profileOpacity = (isTpoMode) ? opacity : ((sessionLOD === 'COMPACT') ? Math.min(0.35, opacity * 0.40) : opacity);
+    const profileOpacity = (timeframeStr === '1m' || isTpoMode) ? opacity : ((sessionLOD === 'COMPACT') ? Math.min(0.35, opacity * 0.40) : opacity);
 
     ctx.save();
     ctx.globalAlpha = profileOpacity;

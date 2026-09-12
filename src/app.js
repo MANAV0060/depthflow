@@ -4,18 +4,18 @@
  */
 
 import { ProviderRegistry } from './data/ProviderRegistry.js';
-import { ChartEngine } from './chart/ChartEngine.js?v=tv2';
-import { VolumeProfileEngine } from './analytics/VolumeProfileEngine.js';
+import { ChartEngine } from './chart/ChartEngine.js?v=tpo_live_v4';
+import { VolumeProfileEngine } from './analytics/VolumeProfileEngine.js?v=tpo_live_v4';
 import { VolumeProfileRenderer } from './chart/VolumeProfileRenderer.js?v=tv1';
-import { DeltaEngine } from './analytics/DeltaEngine.js';
-import { AdaptiveClassifier } from './analytics/AdaptiveClassifier.js';
-import { FootprintAggregator } from './analytics/FootprintAggregator.js';
-import { PatternDetector } from './analytics/PatternDetector.js';
-import { BigTradesEngine, DetectionMethod, BigTradeEventType } from './analytics/BigTradesEngine.js';
-import { TPOEngine } from './analytics/TPOEngine.js';
-import { ReplayEngine } from './data/ReplayEngine.js';
-import { DiagnosticsDrawer } from './ui/DiagnosticsDrawer.js';
-import { TPOSettingsModal } from './ui/TPOSettingsModal.js';
+import { DeltaEngine } from './analytics/DeltaEngine.js?v=tpo_live_v4';
+import { AdaptiveClassifier } from './analytics/AdaptiveClassifier.js?v=tpo_live_v4';
+import { FootprintAggregator } from './analytics/FootprintAggregator.js?v=tpo_live_v4';
+import { PatternDetector } from './analytics/PatternDetector.js?v=tpo_live_v4';
+import { BigTradesEngine, DetectionMethod, BigTradeEventType } from './analytics/BigTradesEngine.js?v=tpo_live_v4';
+import { TPOEngine } from './analytics/TPOEngine.js?v=tpo_live_v4';
+import { ReplayEngine } from './data/ReplayEngine.js?v=tpo_live_v4';
+import { DiagnosticsDrawer } from './ui/DiagnosticsDrawer.js?v=tpo_live_v4';
+import { TPOSettingsModal } from './ui/TPOSettingsModal.js?v=tpo_live_v4';
 import { defaultConfig } from './analytics/OrderFlowConfig.js';
 
 class DepthflowApp {
@@ -83,7 +83,7 @@ class DepthflowApp {
             valueAreaPercent: settings.valueAreaPercent,
             ibPeriods: settings.ibDuration === 30 ? 1 : 2
           });
-          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol);
+          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol, this.currentTimeframeStr);
           if (this.chartEngine) {
             this.chartEngine.setTpoSessions(sessions);
           }
@@ -225,6 +225,9 @@ class DepthflowApp {
       chartModeSelect.addEventListener('change', (e) => {
         updateChartModeUI(e.target.value);
       });
+      if (chartModeSelect.value && chartModeSelect.value !== 'FOOTPRINT') {
+        updateChartModeUI(chartModeSelect.value);
+      }
     }
 
     if (tpoQuickBtn) {

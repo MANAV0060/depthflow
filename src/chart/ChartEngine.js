@@ -10,7 +10,7 @@
 import { FootprintRenderer } from './FootprintRenderer.js';
 import { FootprintSeriesPaneView } from './FootprintSeriesPlugin.js?v=tv2';
 import { BigTradesPaneView } from './BigTradesPlugin.js?v=tv2';
-import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=tpo_v2';
+import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=tpo_live_v4';
 import { LiquidationHeatmapRenderer } from './LiquidationHeatmapRenderer.js?v=tv1';
 
 export class ChartEngine {
@@ -195,6 +195,8 @@ export class ChartEngine {
       this.tpoSeriesView = new TPOSeriesPaneView({
         theme: this.theme,
         visible: this.chartMode === 'TPO',
+        chartMode: this.chartMode,
+        timeframeStr: this.currentTimeframeStr || '1m',
         sessions: this.tpoSessions
       });
       this.tpoSeries = this.chart.addCustomSeries(this.tpoSeriesView, {
@@ -814,7 +816,7 @@ export class ChartEngine {
   }
 
   setTpoOptions(options) {
-    this.tpoOptions = Object.assign(this.tpoOptions || {}, options);
+    this.tpoOptions = Object.assign(this.tpoOptions || {}, options, { chartMode: this.chartMode });
     if (this.tpoSeriesView) {
       this.tpoSeriesView.setOptions(this.tpoOptions);
     }
