@@ -56,12 +56,13 @@
         </select>
       </div>
 
-      <!-- Quick TPO Mode Toggle Button -->
-      <div class="control-item">
+      <!-- Quick TPO Mode Toggle Button & Settings Gear -->
+      <div class="control-item tpo-control-group">
         <button id="tpoQuickBtn" class="btn-toggle" title="Toggle Time Price Opportunity (TPO / Market Profile)">
           <span class="btn-toggle-dot"></span>
           <span>TPO</span>
         </button>
+        <button id="tpoSettingsGearBtn" class="btn-toggle-gear" title="TPO & Market Profile Settings">⚙</button>
       </div>
 
       <!-- Footprint Mode Selector (Profile vs Delta vs Cluster) -->
@@ -136,6 +137,10 @@
           </div>
           <canvas id="liquidationCanvas"></canvas>
           <div id="bigTradeTooltip" class="big-trade-tooltip hidden"></div>
+          <!-- TPO Price Row Hover Tooltip -->
+          <div id="tpoHoverTooltip" class="tpo-hover-tooltip hidden"></div>
+          <!-- TPO Click Session Inspector Card -->
+          <div id="tpoSessionInspector" class="tpo-session-inspector hidden"></div>
         </div>
       </div>
 
@@ -388,9 +393,121 @@
       <div class="modal-footer">
         <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Dedicated TPO / Market Profile Settings Modal -->
+  <div id="tpoSettingsModal" class="modal hidden">
+    <div class="modal-content tpo-modal-content">
+      <div class="modal-header">
+        <h2>📊 TPO & Market Profile Configuration</h2>
+        <button id="closeTpoSettingsBtn" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <!-- Section 1: Profile Display & Placement -->
+        <div class="settings-group">
+          <div class="settings-group-title">Profile Placement & Modes</div>
+          <div class="form-group">
+            <label>Profile Mode:</label>
+            <select id="cfgTpoProfileType" class="form-select">
+              <option value="TPO_VOLUME" selected>TPO + Volume Profile (Adjacent)</option>
+              <option value="TPO">TPO Profile Only (Letter Blocks)</option>
+              <option value="VOLUME">Volume Profile Only (Horizontal Bars)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Profile Placement:</label>
+            <select id="cfgTpoPosition" class="form-select">
+              <option value="RIGHT" selected>Right Side of Session</option>
+              <option value="LEFT">Left Side of Session</option>
+              <option value="OVERLAY">Overlay Across Session</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Profile Width (<span id="cfgTpoWidthVal">45%</span>):</label>
+            <input type="range" id="cfgTpoWidth" min="20" max="80" value="45" class="form-range">
+          </div>
+          <div class="form-group">
+            <label>Profile Opacity (<span id="cfgTpoOpacityVal">85%</span>):</label>
+            <input type="range" id="cfgTpoOpacity" min="20" max="100" value="85" class="form-range">
+          </div>
+          <div class="form-group">
+            <label>Color Palette:</label>
+            <select id="cfgTpoPalette" class="form-select">
+              <option value="CLASSIC" selected>Classic Institutional (Slate / Teal / Indigo)</option>
+              <option value="HEATMAP">Period Rainbow (Heatmap Progression)</option>
+              <option value="MONOCHROME">Clean Sierra Blue (Monochromatic)</option>
+            </select>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoShowLetters" checked>
+            <label for="cfgTpoShowLetters">Render Letter Glyphs (A, B, C...) When Zoomed In</label>
+          </div>
+        </div>
+
+        <!-- Section 2: Auction Structure & Key Levels -->
+        <div class="settings-group">
+          <div class="settings-group-title">Auction Structure & Key Levels</div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoShowPoc" checked>
+            <label for="cfgTpoShowPoc">Show TPO Point of Control (POC line / tag)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoShowVolPoc" checked>
+            <label for="cfgTpoShowVolPoc">Show Volume Point of Control (vPOC line / tag)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoShowVa" checked>
+            <label for="cfgTpoShowVa">Show 70% Value Area (VAH & VAL dashed lines)</label>
+          </div>
+          <div class="form-group">
+            <label>Value Area Distribution % (<span id="cfgTpoVaPctVal">70%</span>):</label>
+            <input type="range" id="cfgTpoVaPct" min="50" max="90" value="70" class="form-range">
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoShowIb" checked>
+            <label for="cfgTpoShowIb">Show Initial Balance (IB bracket on margin)</label>
+          </div>
+          <div class="form-group">
+            <label>Initial Balance Duration:</label>
+            <select id="cfgTpoIbDuration" class="form-select">
+              <option value="60" selected>First 60 Minutes (Periods A & B)</option>
+              <option value="30">First 30 Minutes (Period A Only)</option>
+            </select>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoExtendPoc" checked>
+            <label for="cfgTpoExtendPoc">Extend Untested POC Forward (Naked POC Rays)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoSinglePrints" checked>
+            <label for="cfgTpoSinglePrints">Highlight Single Prints (Directional discovery)</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoPoorExtremes" checked>
+            <label for="cfgTpoPoorExtremes">Detect Poor High / Poor Low (Lack of excess heuristic)</label>
+          </div>
+        </div>
+
+        <!-- Section 3: Time & Bracket Configuration -->
+        <div class="settings-group">
+          <div class="settings-group-title">Bracket & Session Configuration</div>
+          <div class="form-group">
+            <label>TPO Bracket Period Duration:</label>
+            <select id="cfgTpoBracketMin" class="form-select">
+              <option value="30" selected>30 Minutes (Standard Institutional)</option>
+              <option value="60">60 Minutes</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="saveTpoSettingsBtn" class="btn btn-primary">Apply TPO Settings</button>
+      </div>
+    </div>
   </div>
 
   <!-- Application Entry Point -->
-  <script type="module" src="src/app.js?v=tv13"></script>
+  <script type="module" src="src/app.js?v=tpo_v2"></script>
 </body>
 </html>

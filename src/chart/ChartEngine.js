@@ -10,8 +10,8 @@
 import { FootprintRenderer } from './FootprintRenderer.js';
 import { FootprintSeriesPaneView } from './FootprintSeriesPlugin.js?v=tv2';
 import { BigTradesPaneView } from './BigTradesPlugin.js?v=tv2';
-import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=tv1';
-import { LiquidationHeatmapRenderer } from './LiquidationHeatmapRenderer.js';
+import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=tpo_v2';
+import { LiquidationHeatmapRenderer } from './LiquidationHeatmapRenderer.js?v=tv1';
 
 export class ChartEngine {
   constructor(mainContainerId, cvdContainerId) {
@@ -328,6 +328,197 @@ export class ChartEngine {
       this.container.addEventListener('click', (e) => inspectBigTrade(e, true));
       this.container.addEventListener('mouseleave', () => tooltipEl.classList.add('hidden'));
     }
+
+    // Interactive TPO Profile Hover Tooltip & Session Inspector
+    const tpoTooltipEl = document.getElementById('tpoHoverTooltip');
+    const tpoInspectorEl = document.getElementById('tpoSessionInspector');
+
+    if (tpoTooltipEl || tpoInspectorEl) {
+      const inspectTpo = (e, isClick = false) => {
+        if (this.chartMode !== 'TPO' || !this.tpoSessions || this.tpoSessions.length === 0 || !this.chart || !this.candlestickSeries) {
+          if (!isClick && tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
+          return;
+        }
+
+        const rect = this.container.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const timeScale = this.chart.timeScale();
+        const priceSeries = this.candlestickSeries;
+
+        const getXForTime = (timeMs) => {
+          if (!this.candles || this.candles.length === 0) return null;
+          let closestCandle = null;
+          let minDiff = Infinity;
+          for (const c of this.candles) {
+            const diff = Math.abs(c.startTime - timeMs);
+            if (diff < minDiff) {
+              minDiff = diff;
+              closestCandle = c;
+            }
+          }
+          if (!closestCandle) return null;
+          return timeScale.timeToCoordinate(Math.floor(closestCandle.startTime / 1000));
+        };
+
+        let hitSession = null;
+        let hitRow = null;
+
+        for (const session of this.tpoSessions) {
+          if (!session.startTime || !session.endTime) continue;
+          const startX = getXForTime(session.startTime);
+          const endX = getXForTime(session.endTime);
+          if (startX === null && endX === null) continue;
+
+          const sLeft = startX !== null ? startX : (endX - 250);
+          const sRight = endX !== null ? endX : (startX + 250);
+
+          const highY = priceSeries.priceToCoordinate(session.high);
+          const lowY = priceSeries.priceToCoordinate(session.low);
+          if (highY === null || lowY === null) continue;
+          const topY = Math.min(highY, lowY);
+          const botY = Math.max(highY, lowY);
+
+          if (mouseX >= sLeft - 20 && mouseX <= sRight + 20 && mouseY >= topY - 15 && mouseY <= botY + 15) {
+            hitSession = session;
+            
+            // Find closest price row using exact pixel coordinates
+            let closestRow = null;
+            let minDiffY = Infinity;
+            session.priceRows.forEach(row => {
+              const rowY = priceSeries.priceToCoordinate(row.price);
+              if (rowY !== null) {
+                const diff = Math.abs(rowY - mouseY);
+                if (diff < minDiffY) {
+                  minDiffY = diff;
+                  closestRow = row;
+                }
+              }
+            });
+
+            const approxRowHeight = Math.max(8, Math.abs(botY - topY) / Math.max(1, session.priceRows.size));
+            if (closestRow && minDiffY <= approxRowHeight * 1.5) {
+              hitRow = closestRow;
+            }
+            break;
+          }
+        }
+
+        if (isClick && hitSession && tpoInspectorEl) {
+          const isDev = hitSession.isDeveloping;
+          const statusClass = isDev ? 'tpo-status-developing' : 'tpo-status-final';
+          const statusText = isDev ? 'Developing Session (Active)' : 'Final Session (Closed)';
+          const range = (hitSession.high - hitSession.low).toFixed(hitSession.tickSize < 0.005 ? 5 : 2);
+
+          tpoInspectorEl.innerHTML = `
+            <div class="tpo-insp-header">
+              <div class="tpo-insp-title">
+                <span>📊 Session Market Profile</span>
+              </div>
+              <button class="tpo-insp-close" id="closeTpoInspectorBtn">×</button>
+            </div>
+            <div class="tpo-insp-status-pill ${statusClass}">${statusText}</div>
+            <div class="tpo-insp-shape">
+              <div class="tpo-insp-shape-name">${hitSession.profileShape || 'Normal Profile'}</div>
+              <div class="tpo-insp-shape-desc">${hitSession.profileInterpretation || ''}</div>
+            </div>
+            <div class="tpo-insp-grid">
+              <div class="tpo-insp-item"><span class="lbl">Session</span><span class="val">${hitSession.sessionKey}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Total TPOs</span><span class="val">${hitSession.totalTpos}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">TPO POC</span><span class="val" style="color:#FFD700">${hitSession.tpoPoc || '--'}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Volume POC</span><span class="val" style="color:#06b6d4">${hitSession.volPoc || '--'}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Value Area High</span><span class="val">${hitSession.vah || '--'}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Value Area Low</span><span class="val">${hitSession.val || '--'}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">IB High</span><span class="val" style="color:#38bdf8">${hitSession.ibHigh || '--'}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">IB Low</span><span class="val" style="color:#38bdf8">${hitSession.ibLow || '--'}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Session High</span><span class="val">${hitSession.high}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Session Low</span><span class="val">${hitSession.low}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Total Range</span><span class="val">${range}</span></div>
+              <div class="tpo-insp-item"><span class="lbl">Total Volume</span><span class="val">${this._formatVol(hitSession.totalVolume)}</span></div>
+            </div>
+          `;
+
+          let left = mouseX + 20;
+          let top = mouseY - 40;
+          if (left + 330 > rect.width) left = Math.max(10, mouseX - 340);
+          if (top < 10) top = 10;
+          if (top + 280 > rect.height) top = Math.max(10, rect.height - 290);
+
+          tpoInspectorEl.style.left = `${left}px`;
+          tpoInspectorEl.style.top = `${top}px`;
+          tpoInspectorEl.classList.remove('hidden');
+
+          const closeBtn = document.getElementById('closeTpoInspectorBtn');
+          if (closeBtn) {
+            closeBtn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              tpoInspectorEl.classList.add('hidden');
+            });
+          }
+        } else if (!isClick && hitRow && tpoTooltipEl) {
+          const isPoc = hitRow.price === hitSession.tpoPoc;
+          const isVolPoc = hitRow.price === hitSession.volPoc;
+          const inVa = hitSession.vah !== null && hitSession.val !== null && hitRow.price >= hitSession.val && hitRow.price <= hitSession.vah;
+          const isSingle = hitSession.singlePrints && hitSession.singlePrints.includes(hitRow.price);
+
+          const deltaSign = hitRow.delta > 0 ? '+' : '';
+          const deltaColor = hitRow.delta >= 0 ? '#089981' : '#F23645';
+
+          tpoTooltipEl.innerHTML = `
+            <div class="tpo-tt-hdr">
+              <span class="tpo-tt-price">${hitRow.price.toFixed(hitSession.tickSize < 0.005 ? 5 : 2)}</span>
+              <span class="tpo-tt-session">${hitSession.sessionKey}</span>
+            </div>
+            <div class="tpo-tt-section-title">Time-At-Price (TPO)</div>
+            <div class="tpo-tt-row"><span class="tpo-tt-lbl">TPO Count:</span> <span class="tpo-tt-val">${hitRow.letters.length}</span></div>
+            <div class="tpo-tt-row"><span class="tpo-tt-lbl">Brackets:</span> <span class="tpo-tt-val" style="letter-spacing:1px;font-family:monospace;">${hitRow.letters.join(' ')}</span></div>
+            
+            <div class="tpo-tt-section-title">Volume-At-Price</div>
+            <div class="tpo-tt-row"><span class="tpo-tt-lbl">Total Volume:</span> <span class="tpo-tt-val">${this._formatVol(hitRow.volume)}</span></div>
+            
+            <div class="tpo-tt-section-title">Order Flow Footprint</div>
+            <div class="tpo-tt-row"><span class="tpo-tt-lbl">Bid / Ask:</span> <span class="tpo-tt-val">${this._formatVol(hitRow.bidVolume)} × ${this._formatVol(hitRow.askVolume)}</span></div>
+            <div class="tpo-tt-row"><span class="tpo-tt-lbl">Delta:</span> <span class="tpo-tt-val" style="color:${deltaColor}">${deltaSign}${this._formatVol(hitRow.delta)}</span></div>
+            <div class="tpo-tt-row"><span class="tpo-tt-lbl">Imbalance:</span> <span class="tpo-tt-val">${hitRow.hasImbalance ? '<span style="color:#f59e0b">YES</span>' : 'NO'}</span></div>
+
+            <div class="tpo-tt-badges">
+              ${isPoc ? '<span class="tpo-badge tpo-badge-poc">TPO POC</span>' : ''}
+              ${isVolPoc ? '<span class="tpo-badge tpo-badge-vpoc">VOL POC</span>' : ''}
+              ${inVa ? '<span class="tpo-badge tpo-badge-va">VALUE AREA</span>' : ''}
+              ${isSingle ? '<span class="tpo-badge tpo-badge-single">SINGLE PRINT</span>' : ''}
+            </div>
+          `;
+
+          let left = mouseX + 16;
+          let top = mouseY - 40;
+          if (left + 260 > rect.width) left = mouseX - 270;
+          if (top < 10) top = 10;
+          if (top + 210 > rect.height) top = Math.max(10, rect.height - 220);
+
+          tpoTooltipEl.style.left = `${left}px`;
+          tpoTooltipEl.style.top = `${top}px`;
+          tpoTooltipEl.classList.remove('hidden');
+        } else {
+          if (!isClick && tpoTooltipEl) {
+            tpoTooltipEl.classList.add('hidden');
+          }
+        }
+      };
+
+      this.container.addEventListener('mousemove', (e) => inspectTpo(e, false));
+      this.container.addEventListener('click', (e) => inspectTpo(e, true));
+      this.container.addEventListener('mouseleave', () => {
+        if (tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
+      });
+    }
+  }
+
+  _formatVol(vol) {
+    const v = Math.abs(vol || 0);
+    if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
+    if (v >= 1000) return `${Math.round(v / 1000)}K`;
+    return Math.round(v).toString();
   }
 
   setFootprintStyle(style) {
@@ -352,6 +543,18 @@ export class ChartEngine {
     if (this.tpoSeries) {
       try {
         this.tpoSeries.applyOptions({ sessions: this.tpoSessions });
+      } catch (e) {}
+    }
+  }
+
+  setTpoOptions(options) {
+    this.tpoOptions = Object.assign(this.tpoOptions || {}, options);
+    if (this.tpoSeriesView) {
+      this.tpoSeriesView.setOptions(this.tpoOptions);
+    }
+    if (this.tpoSeries) {
+      try {
+        this.tpoSeries.applyOptions(this.tpoOptions);
       } catch (e) {}
     }
   }
@@ -1096,10 +1299,15 @@ export class ChartEngine {
     }
 
     // 2. Render Footprint Overlay
-    if (this.chartMode === 'CANDLESTICK') return;
-    if (!this.footprintRenderer || this.candles.length === 0) return;
-
     const canvasEl = document.getElementById('footprintCanvas');
+    if (this.chartMode === 'CANDLESTICK' || this.chartMode === 'TPO') {
+      if (canvasEl) {
+        const ctx = canvasEl.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+      }
+      return;
+    }
+    if (!this.footprintRenderer || this.candles.length === 0) return;
     if (!canvasEl) return;
 
     const rect = canvasEl.getBoundingClientRect();

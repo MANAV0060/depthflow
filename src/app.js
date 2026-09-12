@@ -15,6 +15,7 @@ import { BigTradesEngine, DetectionMethod, BigTradeEventType } from './analytics
 import { TPOEngine } from './analytics/TPOEngine.js';
 import { ReplayEngine } from './data/ReplayEngine.js';
 import { DiagnosticsDrawer } from './ui/DiagnosticsDrawer.js';
+import { TPOSettingsModal } from './ui/TPOSettingsModal.js';
 import { defaultConfig } from './analytics/OrderFlowConfig.js';
 
 class DepthflowApp {
@@ -28,6 +29,7 @@ class DepthflowApp {
     this.bigTradesEngine = new BigTradesEngine();
     this.bigTradesVisible = true;
     this.tpoEngine = new TPOEngine();
+    this.tpoSettingsModal = null;
     this._lastTpoUpdate = 0;
 
     const symSelect = document.getElementById('symbolSelect');
@@ -71,6 +73,35 @@ class DepthflowApp {
       onTick: (event) => this._processMarketEvent(event),
       onStateChange: (state) => this._updateReplayUI(state)
     });
+
+    // Init TPO & Market Profile Settings Modal
+    this.tpoSettingsModal = new TPOSettingsModal({
+      onSettingsChange: (settings) => {
+        if (this.tpoEngine) {
+          this.tpoEngine.setOptions({
+            bracketMinutes: settings.bracketMinutes,
+            valueAreaPercent: settings.valueAreaPercent,
+            ibPeriods: settings.ibDuration === 30 ? 1 : 2
+          });
+          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol);
+          if (this.chartEngine) {
+            this.chartEngine.setTpoSessions(sessions);
+          }
+        }
+        if (this.chartEngine) {
+          this.chartEngine.setTpoOptions(settings);
+        }
+      }
+    });
+
+    // Apply initial TPO settings to engines
+    const initialTpoSettings = this.tpoSettingsModal.getSettings();
+    this.tpoEngine.setOptions({
+      bracketMinutes: initialTpoSettings.bracketMinutes,
+      valueAreaPercent: initialTpoSettings.valueAreaPercent,
+      ibPeriods: initialTpoSettings.ibDuration === 30 ? 1 : 2
+    });
+    this.chartEngine.setTpoOptions(initialTpoSettings);
 
     // Bind Event Listeners
     this._bindControls();
