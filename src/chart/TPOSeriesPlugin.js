@@ -105,29 +105,55 @@ export class TPOSeriesPaneRenderer {
       }
     }
 
-    // Build timestamp-to-X lookup from visible bars
+    // Extract valid visible bars with timestamp and pixel X
+    const validBars = [];
     const timeToXMap = new Map();
     this._data.bars.forEach(b => {
       if (b && b.x !== null && b.x !== undefined && !isNaN(b.x)) {
         const t = b.originalData ? (b.originalData.startTime || b.originalData.time * 1000) : b.time * 1000;
+        validBars.push({ t, x: b.x });
         timeToXMap.set(t, b.x);
       }
     });
 
+    if (validBars.length === 0) return;
+    validBars.sort((a, b) => a.t - b.t);
+
+    const firstBar = validBars[0];
+    const lastBar = validBars[validBars.length - 1];
+    const firstBarTime = firstBar.t;
+    const lastBarTime = lastBar.t;
+
+    let avgBarDurationMs = 60000;
+    if (validBars.length >= 2) {
+      avgBarDurationMs = Math.max(1000, (lastBarTime - firstBarTime) / (validBars.length - 1));
+    }
+
     const getXForTime = (timeMs) => {
       if (timeToXMap.has(timeMs)) return timeToXMap.get(timeMs);
+
+      // If timestamp is before the first visible bar:
+      // Project linearly into negative coordinates so off-screen sessions cull naturally!
+      if (timeMs < firstBarTime) {
+        const barsDelta = (firstBarTime - timeMs) / avgBarDurationMs;
+        return firstBar.x - (barsDelta * currentBarSpacing);
+      }
+
+      // If timestamp is after the last visible bar:
+      if (timeMs > lastBarTime) {
+        const barsDelta = (timeMs - lastBarTime) / avgBarDurationMs;
+        return lastBar.x + (barsDelta * currentBarSpacing);
+      }
+
       let closestX = null;
       let minDiff = Infinity;
-      this._data.bars.forEach(b => {
-        if (b && b.x !== null && b.x !== undefined && !isNaN(b.x)) {
-          const t = b.originalData ? (b.originalData.startTime || b.originalData.time * 1000) : b.time * 1000;
-          const diff = Math.abs(t - timeMs);
-          if (diff < minDiff) {
-            minDiff = diff;
-            closestX = b.x;
-          }
+      for (let i = 0; i < validBars.length; i++) {
+        const diff = Math.abs(validBars[i].t - timeMs);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestX = validBars[i].x;
         }
-      });
+      }
       return closestX;
     };
 
@@ -137,7 +163,7 @@ export class TPOSeriesPaneRenderer {
     // Render active/latest session first so it has highest priority for labels and screen space
     for (let sessionIdx = this._sessions.length - 1; sessionIdx >= 0; sessionIdx--) {
       const session = this._sessions[sessionIdx];
-      this._renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts, currentBarSpacing, labelManager);
+      this._renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts, currentBarSpacing, labelManager, firstBarTime, lastBarTime, avgBarDurationMs);
     }
 
     // Render Naked POC Rays extending into future sessions (hygienic limit)
@@ -146,21 +172,30 @@ export class TPOSeriesPaneRenderer {
     }
   }
 
-  _renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts, currentBarSpacing, labelManager) {
+  _renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts, currentBarSpacing, labelManager, firstBarTime, lastBarTime, avgBarDurationMs) {
     if (!session || !session.startTime || !session.endTime) return;
+
+    // Strict temporal culling:
+    // If session ended before the earliest data in the chart, it is 100% off-screen in the past!
+    if (firstBarTime && session.endTime < firstBarTime - (avgBarDurationMs * 2)) return;
+    if (lastBarTime && session.startTime > lastBarTime + (avgBarDurationMs * 10)) return;
 
     const startX = getXForTime(session.startTime);
     const endX = getXForTime(session.endTime);
-    if (startX === null && endX === null) return;
+    if (startX === null || endX === null) return;
 
-    const leftX = startX !== null ? startX : (endX - 250);
-    const rightX = endX !== null ? endX : (startX + 250);
+    const leftX = startX;
+    const rightX = endX;
     
     // sessionSpan = physical chart distance for this session (available chart space)
-    const sessionSpan = Math.max(20, rightX - leftX);
+    const sessionSpan = rightX - leftX;
 
-    // Viewport bounds culling
-    if (rightX < -150 || leftX > mediaWidth + 150) return;
+    // Viewport bounds culling:
+    // If session has completely scrolled off the left or right of the screen
+    if (rightX < -50 || leftX > mediaWidth + 50) return;
+
+    // Discard degenerate sessions that have no horizontal space
+    if (sessionSpan < 15) return;
 
     const highY = priceToCoordinate(session.high);
     const lowY = priceToCoordinate(session.low);

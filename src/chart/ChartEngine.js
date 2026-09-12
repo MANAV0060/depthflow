@@ -334,9 +334,9 @@ export class ChartEngine {
     const tpoInspectorEl = document.getElementById('tpoSessionInspector');
 
     if (tpoTooltipEl || tpoInspectorEl) {
-      const inspectTpo = (e, isClick = false) => {
+      const inspectTpo = (e, isDblClick = false) => {
         if (this.chartMode !== 'TPO' || !this.tpoSessions || this.tpoSessions.length === 0 || !this.chart || !this.candlestickSeries) {
-          if (!isClick && tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
+          if (!isDblClick && tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
           return;
         }
 
@@ -347,15 +347,34 @@ export class ChartEngine {
         const timeScale = this.chart.timeScale();
         const priceSeries = this.candlestickSeries;
 
+        if (!this.candles || this.candles.length === 0) return;
+        const firstCandle = this.candles[0];
+        const lastCandle = this.candles[this.candles.length - 1];
+        const firstCandleTime = firstCandle.startTime;
+        const lastCandleTime = lastCandle.startTime;
+        const avgCandleMs = Math.max(1000, (lastCandleTime - firstCandleTime) / Math.max(1, this.candles.length - 1));
+
         const getXForTime = (timeMs) => {
-          if (!this.candles || this.candles.length === 0) return null;
+          if (timeMs < firstCandleTime) {
+            const firstCoord = timeScale.timeToCoordinate(Math.floor(firstCandleTime / 1000));
+            if (firstCoord === null) return null;
+            const diffBars = (firstCandleTime - timeMs) / avgCandleMs;
+            return firstCoord - (diffBars * 15);
+          }
+          if (timeMs > lastCandleTime) {
+            const lastCoord = timeScale.timeToCoordinate(Math.floor(lastCandleTime / 1000));
+            if (lastCoord === null) return null;
+            const diffBars = (timeMs - lastCandleTime) / avgCandleMs;
+            return lastCoord + (diffBars * 15);
+          }
+
           let closestCandle = null;
           let minDiff = Infinity;
-          for (const c of this.candles) {
-            const diff = Math.abs(c.startTime - timeMs);
+          for (let i = 0; i < this.candles.length; i++) {
+            const diff = Math.abs(this.candles[i].startTime - timeMs);
             if (diff < minDiff) {
               minDiff = diff;
-              closestCandle = c;
+              closestCandle = this.candles[i];
             }
           }
           if (!closestCandle) return null;
@@ -367,12 +386,17 @@ export class ChartEngine {
 
         for (const session of this.tpoSessions) {
           if (!session.startTime || !session.endTime) continue;
+          if (session.endTime < firstCandleTime - (avgCandleMs * 2)) continue;
+          if (session.startTime > lastCandleTime + (avgCandleMs * 5)) continue;
+
           const startX = getXForTime(session.startTime);
           const endX = getXForTime(session.endTime);
-          if (startX === null && endX === null) continue;
+          if (startX === null || endX === null) continue;
 
-          const sLeft = startX !== null ? startX : (endX - 250);
-          const sRight = endX !== null ? endX : (startX + 250);
+          const sLeft = startX;
+          const sRight = endX;
+          const sessionSpan = sRight - sLeft;
+          if (sessionSpan < 15) continue;
 
           const highY = priceSeries.priceToCoordinate(session.high);
           const lowY = priceSeries.priceToCoordinate(session.low);
@@ -380,7 +404,22 @@ export class ChartEngine {
           const topY = Math.min(highY, lowY);
           const botY = Math.max(highY, lowY);
 
-          if (mouseX >= sLeft - 20 && mouseX <= sRight + 20 && mouseY >= topY - 15 && mouseY <= botY + 15) {
+          // Restrict hit test strictly to the TPO profile blocks (NOT across the candles!)
+          const pos = this.tpoOptions ? (this.tpoOptions.profilePosition || 'RIGHT') : 'RIGHT';
+          const widthRatio = this.tpoOptions ? (this.tpoOptions.profileWidthRatio || 0.45) : 0.45;
+          const allocatedW = Math.max(35, Math.min(450, sessionSpan * widthRatio));
+
+          let profileLeft = sLeft;
+          let profileRight = sRight;
+          if (pos === 'RIGHT') {
+            profileLeft = Math.max(sLeft + 10, sRight - allocatedW - 8);
+            profileRight = sRight;
+          } else if (pos === 'LEFT') {
+            profileLeft = sLeft + 8;
+            profileRight = sLeft + 8 + allocatedW;
+          }
+
+          if (mouseX >= profileLeft - 4 && mouseX <= profileRight + 4 && mouseY >= topY - 4 && mouseY <= botY + 4) {
             hitSession = session;
             
             // Find closest price row using exact pixel coordinates
@@ -397,7 +436,7 @@ export class ChartEngine {
               }
             });
 
-            const approxRowHeight = Math.max(8, Math.abs(botY - topY) / Math.max(1, session.priceRows.size));
+            const approxRowHeight = Math.max(6, Math.abs(botY - topY) / Math.max(1, session.priceRows.size));
             if (closestRow && minDiffY <= approxRowHeight * 1.5) {
               hitRow = closestRow;
             }
@@ -405,7 +444,8 @@ export class ChartEngine {
           }
         }
 
-        if (isClick && hitSession && tpoInspectorEl) {
+        // Only open Session Inspector on deliberate DOUBLE-CLICK on the profile blocks!
+        if (isDblClick && hitSession && tpoInspectorEl) {
           const isDev = hitSession.isDeveloping;
           const statusClass = isDev ? 'tpo-status-developing' : 'tpo-status-final';
           const statusText = isDev ? 'Developing Session (Active)' : 'Final Session (Closed)';
@@ -456,7 +496,13 @@ export class ChartEngine {
               tpoInspectorEl.classList.add('hidden');
             });
           }
-        } else if (!isClick && hitRow && tpoTooltipEl) {
+        } else if (!isDblClick && hitRow && tpoTooltipEl) {
+          const allowTooltip = this.tpoOptions && this.tpoOptions.showHoverTooltip === true;
+          if (!allowTooltip) {
+            tpoTooltipEl.classList.add('hidden');
+            return;
+          }
+
           const isPoc = hitRow.price === hitSession.tpoPoc;
           const isVolPoc = hitRow.price === hitSession.volPoc;
           const inVa = hitSession.vah !== null && hitSession.val !== null && hitRow.price >= hitSession.val && hitRow.price <= hitSession.vah;
@@ -500,16 +546,37 @@ export class ChartEngine {
           tpoTooltipEl.style.top = `${top}px`;
           tpoTooltipEl.classList.remove('hidden');
         } else {
-          if (!isClick && tpoTooltipEl) {
+          if (!isDblClick && tpoTooltipEl) {
             tpoTooltipEl.classList.add('hidden');
           }
         }
       };
 
+      // Hover on profile blocks only
       this.container.addEventListener('mousemove', (e) => inspectTpo(e, false));
-      this.container.addEventListener('click', (e) => inspectTpo(e, true));
+
+      // Double-click to open session inspector card
+      this.container.addEventListener('dblclick', (e) => inspectTpo(e, true));
+
+      // Single click dismisses open inspector popup if clicking away
+      this.container.addEventListener('click', (e) => {
+        if (tpoInspectorEl && !tpoInspectorEl.classList.contains('hidden')) {
+          if (!tpoInspectorEl.contains(e.target)) {
+            tpoInspectorEl.classList.add('hidden');
+          }
+        }
+      });
+
       this.container.addEventListener('mouseleave', () => {
         if (tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
+      });
+
+      // Escape key to dismiss popups immediately
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          if (tpoInspectorEl) tpoInspectorEl.classList.add('hidden');
+          if (tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
+        }
       });
     }
   }

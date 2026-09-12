@@ -40,6 +40,7 @@ export class TPOSettingsModal {
       extendPocRays: true,
       maxNakedPocRays: 3,
       showCompactMarginStrip: true,
+      showHoverTooltip: false,
       showSinglePrints: true,
       showPoorExtremes: true,
       bracketMinutes: 30
@@ -85,6 +86,7 @@ export class TPOSettingsModal {
     this.paletteSelect = document.getElementById('cfgTpoPalette');
     this.showLettersCheck = document.getElementById('cfgTpoShowLetters');
     this.showMarginStripCheck = document.getElementById('cfgTpoMarginStrip');
+    this.showHoverTooltipCheck = document.getElementById('cfgTpoHoverTooltip');
 
     this.showPocCheck = document.getElementById('cfgTpoShowPoc');
     this.showVolPocCheck = document.getElementById('cfgTpoShowVolPoc');
@@ -120,6 +122,7 @@ export class TPOSettingsModal {
     if (this.paletteSelect) this.paletteSelect.value = this.settings.palette;
     if (this.showLettersCheck) this.showLettersCheck.checked = !!this.settings.showLetters;
     if (this.showMarginStripCheck) this.showMarginStripCheck.checked = !!this.settings.showCompactMarginStrip;
+    if (this.showHoverTooltipCheck) this.showHoverTooltipCheck.checked = !!this.settings.showHoverTooltip;
 
     if (this.showPocCheck) this.showPocCheck.checked = !!this.settings.showPoc;
     if (this.showVolPocCheck) this.showVolPocCheck.checked = !!this.settings.showVolPoc;
@@ -149,6 +152,7 @@ export class TPOSettingsModal {
     if (this.paletteSelect) this.settings.palette = this.paletteSelect.value;
     if (this.showLettersCheck) this.settings.showLetters = this.showLettersCheck.checked;
     if (this.showMarginStripCheck) this.settings.showCompactMarginStrip = this.showMarginStripCheck.checked;
+    if (this.showHoverTooltipCheck) this.settings.showHoverTooltip = this.showHoverTooltipCheck.checked;
 
     if (this.showPocCheck) this.settings.showPoc = this.showPocCheck.checked;
     if (this.showVolPocCheck) this.settings.showVolPoc = this.showVolPocCheck.checked;
