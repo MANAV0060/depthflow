@@ -4,24 +4,60 @@
  *
  * Implements ICustomSeriesPaneView & ICustomSeriesPaneRenderer.
  * 
- * Core Architectural Principles:
+ * Core Architectural Principles & Adaptive Information Density:
  * 1. Candlesticks remain the PRIMARY visual layer (100% visible, no giant opaque bounding boxes).
- * 2. True Sculpted Distribution Shape: Row length strictly equals letters.length * cellWidth.
- * 3. Restrained, institutional palettes (Classic Slate, Period Heatmap, Monochrome).
- * 4. Rigorous Auction Levels: TPO POC, Volume POC (vPOC), 70% Value Area (VAH & VAL), Initial Balance (IB).
- * 5. Developing vs Final level indicators (dPOC, dVAH, dVAL for active developing sessions).
- * 6. Optional Naked POC ray extensions.
- * 7. Modes: TPO, Volume, TPO + Volume (adjacent on shared price ladder).
- * 8. Positions: Right, Left, Overlay with configurable width and opacity sliders.
+ * 2. Adaptive Information Density (LOD):
+ *    - Micro / 1m Timeframe (or dense zoom): Compact contextual session profile with essential auction
+ *      reference levels (POC, VAH, VAL, IB) + optional subtle margin strip, keeping candles, footprint,
+ *      Big Trades, and delta primary.
+ *    - Intermediate / 5m–15m: Clean sculpted profile silhouette without historical label collisions.
+ *    - Macro / 30m+ or high zoom: Full distribution with crisp letter glyphs and adjacent volume profile.
+ * 3. Historical Session Culling: Crowded historical sessions suppress colliding text tags and raw volume numbers.
+ * 4. Naked POC Rays Hygiene: Limits active rays to the N most recent relevant untested levels (default: 3).
+ * 5. Strict Price/Time Coordinate Anchoring: All lines and profiles remain 100% anchored to chart coordinates.
+ * 6. Non-Destructive LOD: Underlying TPO calculation data is preserved completely.
  */
 
 import { TPO_LETTERS, getTpoColor } from '../analytics/TPOEngine.js';
 
+class LabelOcclusionManager {
+  constructor() {
+    this.boxes = [];
+  }
+
+  canPlace(x, y, w, h, padX = 4, padY = 3) {
+    const l = x - padX;
+    const t = y - padY;
+    const r = x + w + padX;
+    const b = y + h + padY;
+    for (let i = 0; i < this.boxes.length; i++) {
+      const o = this.boxes[i];
+      if (l < o.r && r > o.l && t < o.b && b > o.t) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  add(x, y, w, h) {
+    this.boxes.push({ l: x, t: y, r: x + w, b: y + h });
+  }
+}
+
 export class TPOSeriesPaneRenderer {
   constructor() {
     this._data = null;
-    this._options = null;
+    this._options = {};
     this._sessions = [];
+  }
+
+  setData(data) {
+    this._data = data;
+    this._sessions = (data && data.sessions) ? data.sessions : [];
+  }
+
+  setOptions(options) {
+    this._options = Object.assign(this._options, options);
   }
 
   update(data, options) {
@@ -57,6 +93,18 @@ export class TPOSeriesPaneRenderer {
       ? mediaSize.height
       : (ctx.canvas ? ctx.canvas.height : 3000);
 
+    // Measure physical bar spacing (zoom density) directly from visible bars
+    let currentBarSpacing = 20;
+    if (this._data.bars && this._data.bars.length >= 2) {
+      for (let i = 1; i < Math.min(12, this._data.bars.length); i++) {
+        const dx = Math.abs(this._data.bars[i].x - this._data.bars[i - 1].x);
+        if (dx > 1 && dx < 600) {
+          currentBarSpacing = dx;
+          break;
+        }
+      }
+    }
+
     // Build timestamp-to-X lookup from visible bars
     const timeToXMap = new Map();
     this._data.bars.forEach(b => {
@@ -83,18 +131,22 @@ export class TPOSeriesPaneRenderer {
       return closestX;
     };
 
-    // Render each session profile
-    this._sessions.forEach((session, sessionIdx) => {
-      this._renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts);
-    });
+    // Label collision manager: ensures zero overlapping text labels on historical sessions
+    const labelManager = new LabelOcclusionManager();
 
-    // Render Naked POC Rays extending into future sessions (if enabled)
+    // Render active/latest session first so it has highest priority for labels and screen space
+    for (let sessionIdx = this._sessions.length - 1; sessionIdx >= 0; sessionIdx--) {
+      const session = this._sessions[sessionIdx];
+      this._renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts, currentBarSpacing, labelManager);
+    }
+
+    // Render Naked POC Rays extending into future sessions (hygienic limit)
     if (opts.extendPocRays !== false) {
-      this._renderNakedPocRays(ctx, getXForTime, priceToCoordinate, mediaWidth, isDark);
+      this._renderNakedPocRays(ctx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts);
     }
   }
 
-  _renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts) {
+  _renderSession(ctx, session, sessionIdx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts, currentBarSpacing, labelManager) {
     if (!session || !session.startTime || !session.endTime) return;
 
     const startX = getXForTime(session.startTime);
@@ -103,7 +155,9 @@ export class TPOSeriesPaneRenderer {
 
     const leftX = startX !== null ? startX : (endX - 250);
     const rightX = endX !== null ? endX : (startX + 250);
-    const sessionSpan = Math.max(120, rightX - leftX);
+    
+    // sessionSpan = physical chart distance for this session (available chart space)
+    const sessionSpan = Math.max(20, rightX - leftX);
 
     // Viewport bounds culling
     if (rightX < -150 || leftX > mediaWidth + 150) return;
@@ -129,25 +183,87 @@ export class TPOSeriesPaneRenderer {
       }
     }
 
-    // Configurable Options
+    // Configurable User Options
     const position = opts.profilePosition || 'RIGHT'; // 'RIGHT' | 'LEFT' | 'OVERLAY'
     const profileType = opts.profileType || 'TPO_VOLUME'; // 'TPO' | 'VOLUME' | 'TPO_VOLUME'
     const widthRatio = typeof opts.profileWidthRatio === 'number' ? opts.profileWidthRatio : 0.45;
     const opacity = typeof opts.profileOpacity === 'number' ? opts.profileOpacity : 0.85;
     const paletteName = opts.palette || 'CLASSIC';
     const isDeveloping = session.isDeveloping;
+    const isLatestSession = (sessionIdx === this._sessions.length - 1);
 
-    // Total width allocated for the profile
-    const allocatedWidth = Math.max(120, Math.min(500, Math.floor(sessionSpan * widthRatio)));
+    // =========================================================================
+    // Adaptive Information Density (Level of Detail - LOD)
+    // Responds to screen density/zoom (currentBarSpacing) and sessionSpan, not rigid hiding
+    // =========================================================================
+    const densityMode = opts.densityMode || 'ADAPTIVE'; // 'ADAPTIVE' | 'COMPACT' | 'EXPANDED'
+    const timeframeStr = opts.timeframeStr || '1m';
+    const isMicroTf = (timeframeStr === '1m' || timeframeStr === '3m');
 
-    // Determine horizontal profile placement (Left, Right, or Overlay)
+    let sessionLOD = 'FULL'; // 'FULL' | 'SILHOUETTE' | 'COMPACT' | 'HISTORICAL_COMPACT'
+
+    if (densityMode === 'COMPACT') {
+      sessionLOD = 'COMPACT';
+    } else if (densityMode === 'EXPANDED') {
+      sessionLOD = 'FULL';
+    } else {
+      // ADAPTIVE Mode:
+      if (isMicroTf) {
+        // On 1m/3m (Micro Execution):
+        // Keep TPO in COMPACT contextual mode unless user zooms in heavily
+        if (currentBarSpacing >= 55) {
+          sessionLOD = 'FULL'; // Heavily zoomed in micro action
+        } else if (currentBarSpacing >= 32) {
+          sessionLOD = 'SILHOUETTE'; // Moderately zoomed in
+        } else {
+          sessionLOD = 'COMPACT'; // Normal / dense 1m view
+        }
+      } else {
+        // 5m, 15m, 30m, 1h, 4h, Daily:
+        if (isLatestSession) {
+          sessionLOD = (sessionSpan >= 110 || currentBarSpacing >= 20) ? 'FULL' : 'SILHOUETTE';
+        } else {
+          // Historical sessions: detect available space and crowding
+          if (sessionSpan < 95) {
+            sessionLOD = 'HISTORICAL_COMPACT';
+          } else if (sessionSpan < 190) {
+            sessionLOD = 'SILHOUETTE';
+          } else {
+            sessionLOD = 'FULL';
+          }
+        }
+      }
+    }
+
+    // =========================================================================
+    // Profile Width Allocation (distinct from sessionSpan!)
+    // =========================================================================
+    let allocatedWidth = 0;
+    if (sessionLOD === 'COMPACT') {
+      // Sleek, compact margin strip (optional and lightweight)
+      if (opts.showCompactMarginStrip === false) {
+        allocatedWidth = 0;
+      } else {
+        allocatedWidth = Math.min(50, Math.max(25, Math.floor(sessionSpan * 0.16)));
+      }
+    } else if (sessionLOD === 'HISTORICAL_COMPACT') {
+      // Narrow silhouette on crowded historical sessions
+      allocatedWidth = Math.min(65, Math.max(25, Math.floor(sessionSpan * 0.35)));
+    } else if (sessionLOD === 'SILHOUETTE') {
+      allocatedWidth = Math.max(60, Math.min(220, Math.floor(sessionSpan * widthRatio * 0.85)));
+    } else {
+      // Full distribution
+      allocatedWidth = Math.max(100, Math.min(460, Math.floor(sessionSpan * widthRatio)));
+    }
+
+    // Determine horizontal profile placement
     let profileOriginX = leftX;
     if (position === 'RIGHT') {
-      profileOriginX = Math.max(leftX + 20, rightX - allocatedWidth - 10);
+      profileOriginX = Math.max(leftX + 10, rightX - allocatedWidth - 8);
     } else if (position === 'OVERLAY') {
       profileOriginX = leftX + Math.floor((sessionSpan - allocatedWidth) / 2);
     } else {
-      profileOriginX = leftX + 10;
+      profileOriginX = leftX + 8;
     }
 
     // Proportional layout for TPO vs Volume Profile
@@ -156,7 +272,13 @@ export class TPOSeriesPaneRenderer {
     let tpoLeft = profileOriginX;
     let volLeft = profileOriginX;
 
-    if (profileType === 'TPO_VOLUME') {
+    if (sessionLOD === 'COMPACT') {
+      // Compact mode: single distribution contour
+      tpoW = allocatedWidth;
+      volW = 0;
+      tpoLeft = profileOriginX;
+      volLeft = profileOriginX;
+    } else if (profileType === 'TPO_VOLUME' && sessionLOD !== 'HISTORICAL_COMPACT') {
       tpoW = Math.floor(allocatedWidth * 0.58);
       volW = Math.floor(allocatedWidth * 0.40);
       tpoLeft = profileOriginX;
@@ -175,64 +297,86 @@ export class TPOSeriesPaneRenderer {
       if (r.volume > maxVol) maxVol = r.volume;
     });
 
-    // Individual letter cell width (proportional, compact aspect ratio)
-    const cellWidth = Math.max(6, Math.min(14, Math.floor((tpoW - 10) / Math.max(16, maxLetters))));
-    const showLetters = cellWidth >= 7 && rowHeight >= 7 && (opts.showLetters !== false);
+    // Individual letter cell width
+    let cellWidth = Math.max(4, Math.min(14, Math.floor((tpoW - 8) / Math.max(16, maxLetters))));
+    if (sessionLOD === 'COMPACT' || sessionLOD === 'HISTORICAL_COMPACT') {
+      cellWidth = Math.max(2, Math.floor((tpoW - 4) / Math.max(1, maxLetters)));
+    }
 
+    // Zoom-adaptive letter glyphs: only render glyphs when cell is sufficiently large and in full mode
+    const showLetterGlyphs = (sessionLOD === 'FULL') && cellWidth >= 7 && rowHeight >= 7 && (opts.showLetters !== false);
+
+    // =========================================================================
+    // 1. Session Boundary Separator (Subtle line & session date pill)
+    // =========================================================================
     ctx.save();
-    ctx.globalAlpha = opacity;
-
-    // 1. Session Boundary Separator (Zero opaque boxes: subtle vertical session boundary)
-    ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(0, 0, 0, 0.08)';
+    ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.07)';
     ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
+    ctx.setLineDash([3, 3]);
     ctx.beginPath();
-    ctx.moveTo(leftX, topY - 20);
-    ctx.lineTo(leftX, bottomY + 30);
+    ctx.moveTo(leftX, topY - 16);
+    ctx.lineTo(leftX, bottomY + 20);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Session Date Pill at top
-    ctx.font = '600 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
-    ctx.fillStyle = isDark ? '#64748b' : '#94a3b8';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(`${session.sessionKey}${isDeveloping ? ' (Developing)' : ''}`, leftX + 4, topY - 6);
+    // Date pill: only show date if session has >= 80px width (avoids text crowding on left side of 15m)
+    if (sessionSpan >= 80 || isLatestSession) {
+      ctx.font = '600 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+      ctx.fillStyle = isDark ? '#64748b' : '#94a3b8';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      const labelText = isDeveloping ? `${session.sessionKey} (Active)` : session.sessionKey;
+      ctx.fillText(labelText, leftX + 4, topY - 4);
+    }
+    ctx.restore();
 
+    // =========================================================================
     // 2. Initial Balance (IB) Bracket on Profile Margin
+    // =========================================================================
     if (opts.showIb !== false && session.ibHigh !== null && session.ibLow !== null) {
       const ibTopY = priceToCoordinate(session.ibHigh);
       const ibBotY = priceToCoordinate(session.ibLow);
       if (ibTopY !== null && ibBotY !== null) {
-        const ibX = (position === 'RIGHT') ? (profileOriginX - 8) : (profileOriginX - 8);
+        ctx.save();
+        const ibX = profileOriginX - 6;
         ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = (sessionLOD === 'COMPACT' || sessionLOD === 'HISTORICAL_COMPACT') ? 1.5 : 2;
         ctx.beginPath();
         ctx.moveTo(ibX, ibTopY);
         ctx.lineTo(ibX, ibBotY);
         // High tick cap
-        ctx.moveTo(ibX - 4, ibTopY);
-        ctx.lineTo(ibX + 4, ibTopY);
+        ctx.moveTo(ibX - 3, ibTopY);
+        ctx.lineTo(ibX + 3, ibTopY);
         // Low tick cap
-        ctx.moveTo(ibX - 4, ibBotY);
-        ctx.lineTo(ibX + 4, ibBotY);
+        ctx.moveTo(ibX - 3, ibBotY);
+        ctx.lineTo(ibX + 3, ibBotY);
         ctx.stroke();
 
-        ctx.font = '700 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
-        ctx.fillStyle = '#38bdf8';
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('IB', ibX - 6, (ibTopY + ibBotY) / 2);
+        // IB tag only if not cramped
+        if (sessionLOD !== 'HISTORICAL_COMPACT') {
+          ctx.font = '700 7.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+          ctx.fillStyle = '#38bdf8';
+          ctx.textAlign = 'right';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('IB', ibX - 4, (ibTopY + ibBotY) / 2);
+        }
+        ctx.restore();
       }
     }
 
-    // 3. Render Sculpted TPO Letter Rows & Adjacent Volume Bars
+    // =========================================================================
+    // 3. Render Sculpted TPO Profile Rows & Adjacent Volume Bars
+    // =========================================================================
+    const profileOpacity = (sessionLOD === 'COMPACT') ? Math.min(0.35, opacity * 0.40) : opacity;
+
+    ctx.save();
+    ctx.globalAlpha = profileOpacity;
+
     rows.forEach((row) => {
       const rowY = priceToCoordinate(row.price);
       if (rowY === null) return;
       const drawY = rowY - rowHeight / 2;
 
-      const isPoc = row.price === session.tpoPoc;
       const isSinglePrint = session.singlePrints && session.singlePrints.includes(row.price);
 
       // --- TPO Letters Distribution (Sculpted length = letters.length * cellWidth) ---
@@ -242,12 +386,11 @@ export class TPOSeriesPaneRenderer {
           const cellColor = getTpoColor(letterIdx >= 0 ? letterIdx : lIdx, paletteName);
           const cellX = tpoLeft + lIdx * cellWidth;
 
-          // Individual letter cell block
           ctx.fillStyle = cellColor;
-          ctx.fillRect(cellX, drawY, cellWidth - 0.5, Math.max(1, rowHeight - 0.5));
+          ctx.fillRect(cellX, drawY, Math.max(1, cellWidth - 0.5), Math.max(1, rowHeight - 0.5));
 
-          // Draw letter glyph if zoomed in
-          if (showLetters) {
+          // Draw letter glyph if in full LOD and zoomed in
+          if (showLetterGlyphs) {
             ctx.font = `700 ${Math.min(9, rowHeight - 1)}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace`;
             ctx.fillStyle = '#ffffff';
             ctx.textAlign = 'center';
@@ -256,8 +399,8 @@ export class TPOSeriesPaneRenderer {
           }
         });
 
-        // Single Print outline marker
-        if (isSinglePrint && opts.showSinglePrints !== false) {
+        // Single Print outline marker (only when not cramped)
+        if (isSinglePrint && opts.showSinglePrints !== false && sessionLOD !== 'HISTORICAL_COMPACT') {
           ctx.strokeStyle = '#f59e0b';
           ctx.lineWidth = 1;
           ctx.strokeRect(tpoLeft - 1, drawY, cellWidth + 1, Math.max(1, rowHeight - 0.5));
@@ -265,16 +408,14 @@ export class TPOSeriesPaneRenderer {
       }
 
       // --- Adjacent Volume Profile Bar ---
-      if (volW > 0 && row.volume > 0) {
+      if (volW > 0 && row.volume > 0 && sessionLOD !== 'COMPACT' && sessionLOD !== 'HISTORICAL_COMPACT') {
         const volRatio = Math.min(1.0, row.volume / maxVol);
-        const barW = Math.max(3, Math.round((volW - 10) * volRatio));
+        const barW = Math.max(2, Math.round((volW - 8) * volRatio));
         const isVolPoc = row.price === session.volPoc;
 
-        // Clean MotiveWave/Sierra cyan volume bar
         ctx.fillStyle = isVolPoc ? 'rgba(255, 215, 0, 0.40)' : (isDark ? 'rgba(14, 165, 233, 0.35)' : 'rgba(2, 132, 199, 0.30)');
         ctx.fillRect(volLeft, drawY, barW, Math.max(1, rowHeight - 0.5));
 
-        // Subtle edge line
         ctx.strokeStyle = isVolPoc ? '#FFD700' : (isDark ? 'rgba(56, 189, 248, 0.70)' : 'rgba(2, 132, 199, 0.70)');
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -282,8 +423,8 @@ export class TPOSeriesPaneRenderer {
         ctx.lineTo(volLeft + barW, drawY + rowHeight - 0.5);
         ctx.stroke();
 
-        // Exact Volume text label
-        if (rowHeight >= 8 && barW >= 24) {
+        // Exact Volume text label: ONLY in FULL LOD to prevent label collisions
+        if (sessionLOD === 'FULL' && rowHeight >= 8 && barW >= 24) {
           ctx.font = `600 ${Math.min(8, rowHeight - 1)}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace`;
           ctx.fillStyle = isDark ? '#e2e8f0' : '#1e293b';
           ctx.textAlign = 'left';
@@ -293,112 +434,197 @@ export class TPOSeriesPaneRenderer {
       }
     });
 
-    ctx.restore(); // Restore opacity for crisp auction level overlays
+    ctx.restore();
 
-    // 4. TPO Point of Control (POC / dPOC) - Crisp golden line (NO giant opaque yellow box!)
+    // =========================================================================
+    // 4. Point of Control (POC / dPOC) - Crisp golden line
+    // Label collision hygiene: Suppress text tags on cramped historical sessions
+    // =========================================================================
     if (opts.showPoc !== false && session.tpoPoc !== null) {
       const pocY = priceToCoordinate(session.tpoPoc);
       if (pocY !== null) {
-        const pocLabel = isDeveloping ? `dPOC ${session.tpoPoc}` : `POC ${session.tpoPoc}`;
-        const pocRow = session.priceRows.get(session.tpoPoc);
-        const pocRowW = pocRow ? (pocRow.letters.length * cellWidth) : (allocatedWidth * 0.7);
-        const lineEndX = tpoLeft + pocRowW + (volW > 0 ? (volW + 12) : 10);
+        ctx.save();
+        const isHistoricalCramped = (sessionLOD === 'HISTORICAL_COMPACT');
+        
+        let lineStartX = tpoLeft;
+        let lineEndX = tpoLeft + allocatedWidth;
 
-        ctx.strokeStyle = '#FFD700';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(tpoLeft - 4, pocY);
-        ctx.lineTo(lineEndX, pocY);
-        ctx.stroke();
+        if (sessionLOD === 'COMPACT') {
+          // On 1m: POC spans the active session width cleanly
+          lineStartX = leftX;
+          lineEndX = rightX;
+        } else {
+          const pocRow = session.priceRows.get(session.tpoPoc);
+          const pocRowW = pocRow ? (pocRow.letters.length * cellWidth) : (allocatedWidth * 0.7);
+          lineEndX = tpoLeft + pocRowW + (volW > 0 ? (volW + 10) : 8);
+        }
 
-        // Elegant POC tag
-        ctx.fillStyle = '#FFD700';
-        ctx.font = '700 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(pocLabel, lineEndX + 4, pocY);
+        // Active session gets vibrant solid line; historical sessions get subtle dashed line
+        if (isLatestSession || isDeveloping) {
+          ctx.strokeStyle = '#FFD700';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.moveTo(lineStartX, pocY);
+          ctx.lineTo(lineEndX, pocY);
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = isHistoricalCramped ? 'rgba(255, 215, 0, 0.35)' : 'rgba(255, 215, 0, 0.60)';
+          ctx.lineWidth = 1.0;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(lineStartX, pocY);
+          ctx.lineTo(lineEndX, pocY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // Label Tag: Only show text if collision manager permits and session has room
+        const canShowPocText = isLatestSession || (!isHistoricalCramped && sessionSpan >= 110);
+        if (canShowPocText) {
+          const pocLabel = isDeveloping ? `dPOC ${session.tpoPoc}` : `POC ${session.tpoPoc}`;
+          ctx.font = '700 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+          const textW = ctx.measureText(pocLabel).width;
+          const textX = lineEndX + 3;
+          const textY = pocY;
+
+          if (labelManager.canPlace(textX, textY - 5, textW, 10)) {
+            labelManager.add(textX, textY - 5, textW, 10);
+            ctx.fillStyle = (isLatestSession || isDeveloping) ? '#FFD700' : 'rgba(255, 215, 0, 0.75)';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(pocLabel, textX, textY);
+          }
+        }
+        ctx.restore();
       }
     }
 
-    // 5. Volume Point of Control (vPOC) - Crisp cyan line (if distinct from TPO POC)
+    // =========================================================================
+    // 5. Volume Point of Control (vPOC) - Cyan line
+    // =========================================================================
     if (opts.showVolPoc !== false && session.volPoc !== null && session.volPoc !== session.tpoPoc && volW > 0) {
-      const vPocY = priceToCoordinate(session.volPoc);
-      if (vPocY !== null) {
-        const vPocLabel = `vPOC ${session.volPoc}`;
-        const lineEndX = volLeft + volW + 10;
+      if (sessionLOD !== 'COMPACT' && sessionLOD !== 'HISTORICAL_COMPACT') {
+        const vPocY = priceToCoordinate(session.volPoc);
+        if (vPocY !== null) {
+          ctx.save();
+          const lineEndX = volLeft + volW + 8;
+          ctx.strokeStyle = isLatestSession ? '#06b6d4' : 'rgba(6, 182, 212, 0.65)';
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([3, 2]);
+          ctx.beginPath();
+          ctx.moveTo(volLeft, vPocY);
+          ctx.lineTo(lineEndX, vPocY);
+          ctx.stroke();
+          ctx.setLineDash([]);
 
-        ctx.strokeStyle = '#06b6d4';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([3, 2]);
-        ctx.beginPath();
-        ctx.moveTo(volLeft - 2, vPocY);
-        ctx.lineTo(lineEndX, vPocY);
-        ctx.stroke();
-        ctx.setLineDash([]);
+          if (sessionSpan >= 120 || isLatestSession) {
+            const vPocLabel = `vPOC ${session.volPoc}`;
+            ctx.font = '700 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+            const textW = ctx.measureText(vPocLabel).width;
+            const textX = lineEndX + 3;
+            const textY = vPocY;
 
-        ctx.fillStyle = '#06b6d4';
-        ctx.font = '700 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(vPocLabel, lineEndX + 4, vPocY);
+            if (labelManager.canPlace(textX, textY - 5, textW, 10)) {
+              labelManager.add(textX, textY - 5, textW, 10);
+              ctx.fillStyle = '#06b6d4';
+              ctx.textAlign = 'left';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(vPocLabel, textX, textY);
+            }
+          }
+          ctx.restore();
+        }
       }
     }
 
+    // =========================================================================
     // 6. Value Area Bounds (VAH & VAL 70%)
+    // =========================================================================
     if (opts.showValueArea !== false) {
+      ctx.save();
+      const isHistoricalCramped = (sessionLOD === 'HISTORICAL_COMPACT');
+
       if (session.vah !== null) {
         const vahY = priceToCoordinate(session.vah);
         if (vahY !== null) {
-          const vahLabel = isDeveloping ? `dVAH ${session.vah}` : `VAH ${session.vah}`;
-          const lineEndX = profileOriginX + allocatedWidth;
+          const lineStartX = (sessionLOD === 'COMPACT') ? leftX : profileOriginX;
+          const lineEndX = (sessionLOD === 'COMPACT') ? rightX : (profileOriginX + allocatedWidth);
 
-          ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.45)' : 'rgba(0, 0, 0, 0.40)';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = isLatestSession
+            ? (isDark ? 'rgba(255, 255, 255, 0.45)' : 'rgba(0, 0, 0, 0.40)')
+            : (isDark ? 'rgba(255, 255, 255, 0.20)' : 'rgba(0, 0, 0, 0.18)');
+          ctx.lineWidth = isLatestSession ? 1.0 : 0.8;
           ctx.setLineDash([4, 3]);
           ctx.beginPath();
-          ctx.moveTo(profileOriginX, vahY);
+          ctx.moveTo(lineStartX, vahY);
           ctx.lineTo(lineEndX, vahY);
           ctx.stroke();
           ctx.setLineDash([]);
 
-          ctx.font = '600 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
-          ctx.fillStyle = isDark ? '#94a3b8' : '#64748b';
-          ctx.textAlign = 'right';
-          ctx.textBaseline = 'bottom';
-          ctx.fillText(vahLabel, lineEndX, vahY - 2);
+          if (!isHistoricalCramped && (sessionSpan >= 110 || isLatestSession)) {
+            const vahLabel = isDeveloping ? `dVAH ${session.vah}` : `VAH ${session.vah}`;
+            ctx.font = '600 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+            const textW = ctx.measureText(vahLabel).width;
+            const textX = lineEndX;
+            const textY = vahY - 8;
+
+            if (labelManager.canPlace(textX - textW, textY, textW, 8)) {
+              labelManager.add(textX - textW, textY, textW, 8);
+              ctx.fillStyle = isDark ? '#94a3b8' : '#64748b';
+              ctx.textAlign = 'right';
+              ctx.textBaseline = 'bottom';
+              ctx.fillText(vahLabel, textX, vahY - 2);
+            }
+          }
         }
       }
 
       if (session.val !== null) {
         const valY = priceToCoordinate(session.val);
         if (valY !== null) {
-          const valLabel = isDeveloping ? `dVAL ${session.val}` : `VAL ${session.val}`;
-          const lineEndX = profileOriginX + allocatedWidth;
+          const lineStartX = (sessionLOD === 'COMPACT') ? leftX : profileOriginX;
+          const lineEndX = (sessionLOD === 'COMPACT') ? rightX : (profileOriginX + allocatedWidth);
 
-          ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.45)' : 'rgba(0, 0, 0, 0.40)';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = isLatestSession
+            ? (isDark ? 'rgba(255, 255, 255, 0.45)' : 'rgba(0, 0, 0, 0.40)')
+            : (isDark ? 'rgba(255, 255, 255, 0.20)' : 'rgba(0, 0, 0, 0.18)');
+          ctx.lineWidth = isLatestSession ? 1.0 : 0.8;
           ctx.setLineDash([4, 3]);
           ctx.beginPath();
-          ctx.moveTo(profileOriginX, valY);
+          ctx.moveTo(lineStartX, valY);
           ctx.lineTo(lineEndX, valY);
           ctx.stroke();
           ctx.setLineDash([]);
 
-          ctx.font = '600 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
-          ctx.fillStyle = isDark ? '#94a3b8' : '#64748b';
-          ctx.textAlign = 'right';
-          ctx.textBaseline = 'top';
-          ctx.fillText(valLabel, lineEndX, valY + 2);
+          if (!isHistoricalCramped && (sessionSpan >= 110 || isLatestSession)) {
+            const valLabel = isDeveloping ? `dVAL ${session.val}` : `VAL ${session.val}`;
+            ctx.font = '600 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+            const textW = ctx.measureText(valLabel).width;
+            const textX = lineEndX;
+            const textY = valY + 1;
+
+            if (labelManager.canPlace(textX - textW, textY, textW, 8)) {
+              labelManager.add(textX - textW, textY, textW, 8);
+              ctx.fillStyle = isDark ? '#94a3b8' : '#64748b';
+              ctx.textAlign = 'right';
+              ctx.textBaseline = 'top';
+              ctx.fillText(valLabel, textX, valY + 2);
+            }
+          }
         }
       }
+      ctx.restore();
     }
 
+    // =========================================================================
     // 7. Poor High / Poor Low Heuristic Markers
-    if (opts.showPoorExtremes !== false) {
+    // =========================================================================
+    if (opts.showPoorExtremes !== false && sessionLOD !== 'HISTORICAL_COMPACT' && sessionLOD !== 'COMPACT') {
+      ctx.save();
       if (session.poorHigh) {
         const topYCoord = priceToCoordinate(session.high);
         if (topYCoord !== null) {
-          ctx.font = '700 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+          ctx.font = '700 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
           ctx.fillStyle = '#ef4444';
           ctx.textAlign = 'left';
           ctx.fillText('⚡ Poor High', profileOriginX, topYCoord - 3);
@@ -407,49 +633,72 @@ export class TPOSeriesPaneRenderer {
       if (session.poorLow) {
         const botYCoord = priceToCoordinate(session.low);
         if (botYCoord !== null) {
-          ctx.font = '700 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+          ctx.font = '700 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
           ctx.fillStyle = '#ef4444';
           ctx.textAlign = 'left';
-          ctx.fillText('⚡ Poor Low', profileOriginX, botYCoord + 10);
+          ctx.fillText('⚡ Poor Low', profileOriginX, botYCoord + 9);
         }
       }
+      ctx.restore();
     }
   }
 
-  _renderNakedPocRays(ctx, getXForTime, priceToCoordinate, mediaWidth, isDark) {
-    this._sessions.forEach(session => {
-      if (!session.tpoPoc) return;
+  /**
+   * Render Naked POC Rays with hygienic filtering:
+   * 1. Only truly UNTESTED sessions (!sess.isPocTested) project forward
+   * 2. Only the N most recent relevant levels within/near visible chart window (default: 3)
+   * 3. Prevents spiderweb clutter across the screen
+   */
+  _renderNakedPocRays(ctx, getXForTime, priceToCoordinate, mediaWidth, mediaHeight, isDark, opts) {
+    if (!this._sessions || this._sessions.length === 0) return;
 
+    const maxRays = typeof opts.maxNakedPocRays === 'number' ? opts.maxNakedPocRays : 3;
+
+    // Filter sessions that have a valid POC and are strictly UNTESTED
+    const untested = [];
+
+    // Scan backwards from most recent historical session
+    for (let i = this._sessions.length - 2; i >= 0; i--) {
+      const sess = this._sessions[i];
+      if (!sess || !sess.tpoPoc) continue;
+
+      if (!sess.isPocTested) {
+        const pocY = priceToCoordinate(sess.tpoPoc);
+        // Only include if within or near visible price range
+        if (pocY !== null && pocY >= -50 && pocY <= mediaHeight + 50) {
+          untested.push(sess);
+          if (untested.length >= maxRays) break;
+        }
+      }
+    }
+
+    untested.forEach(session => {
       const pocY = priceToCoordinate(session.tpoPoc);
       if (pocY === null) return;
 
-      const startX = getXForTime(session.startTime);
+      const startX = getXForTime(session.endTime || session.startTime);
       if (startX === null) return;
 
-      let rayEndX = mediaWidth + 50;
-      if (session.isPocTested && session.pocTestedTime) {
-        const testedX = getXForTime(session.pocTestedTime);
-        if (testedX !== null) rayEndX = testedX;
-      }
+      const rayEndX = mediaWidth + 30;
+      if (rayEndX <= startX + 20) return;
 
-      if (rayEndX <= startX + 100) return;
-
-      // Draw horizontal golden Naked POC Ray
+      ctx.save();
       ctx.strokeStyle = '#FFD700';
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(startX + 100, pocY);
+      ctx.moveTo(startX, pocY);
       ctx.lineTo(rayEndX, pocY);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Ray label tag
+      // Label ray cleanly near chart right margin
       ctx.font = '700 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
       ctx.fillStyle = '#FFD700';
-      ctx.textAlign = 'left';
+      ctx.textAlign = 'right';
       ctx.textBaseline = 'bottom';
-      ctx.fillText('nPOC ray', startX + 110, pocY - 2);
+      ctx.fillText(`nPOC ${session.tpoPoc}`, rayEndX - 10, pocY - 2);
+      ctx.restore();
     });
   }
 
@@ -469,6 +718,8 @@ export class TPOSeriesPaneView {
       visible: true,
       profilePosition: 'RIGHT',   // 'RIGHT' | 'LEFT' | 'OVERLAY'
       profileType: 'TPO_VOLUME',  // 'TPO' | 'VOLUME' | 'TPO_VOLUME'
+      densityMode: 'ADAPTIVE',    // 'ADAPTIVE' | 'COMPACT' | 'EXPANDED'
+      timeframeStr: '1m',
       profileWidthRatio: 0.45,
       profileOpacity: 0.85,
       palette: 'CLASSIC',
@@ -480,6 +731,8 @@ export class TPOSeriesPaneView {
       showSinglePrints: true,
       showPoorExtremes: true,
       extendPocRays: true,
+      maxNakedPocRays: 3,
+      showCompactMarginStrip: true,
       sessions: []
     }, options);
   }

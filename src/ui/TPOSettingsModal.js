@@ -26,6 +26,7 @@ export class TPOSettingsModal {
     const defaultSettings = {
       profileType: 'TPO_VOLUME',  // 'TPO' | 'VOLUME' | 'TPO_VOLUME'
       profilePosition: 'RIGHT',   // 'RIGHT' | 'LEFT' | 'OVERLAY'
+      densityMode: 'ADAPTIVE',    // 'ADAPTIVE' | 'COMPACT' | 'EXPANDED'
       profileWidthRatio: 0.45,
       profileOpacity: 0.85,
       palette: 'CLASSIC',         // 'CLASSIC' | 'HEATMAP' | 'MONOCHROME'
@@ -37,6 +38,8 @@ export class TPOSettingsModal {
       showIb: true,
       ibDuration: 60,             // 60m (A & B) or 30m (A)
       extendPocRays: true,
+      maxNakedPocRays: 3,
+      showCompactMarginStrip: true,
       showSinglePrints: true,
       showPoorExtremes: true,
       bracketMinutes: 30
@@ -74,12 +77,14 @@ export class TPOSettingsModal {
     // Form inputs
     this.profileTypeSelect = document.getElementById('cfgTpoProfileType');
     this.positionSelect = document.getElementById('cfgTpoPosition');
+    this.densityModeSelect = document.getElementById('cfgTpoDensityMode');
     this.widthRange = document.getElementById('cfgTpoWidth');
     this.widthVal = document.getElementById('cfgTpoWidthVal');
     this.opacityRange = document.getElementById('cfgTpoOpacity');
     this.opacityVal = document.getElementById('cfgTpoOpacityVal');
     this.paletteSelect = document.getElementById('cfgTpoPalette');
     this.showLettersCheck = document.getElementById('cfgTpoShowLetters');
+    this.showMarginStripCheck = document.getElementById('cfgTpoMarginStrip');
 
     this.showPocCheck = document.getElementById('cfgTpoShowPoc');
     this.showVolPocCheck = document.getElementById('cfgTpoShowVolPoc');
@@ -89,6 +94,7 @@ export class TPOSettingsModal {
     this.showIbCheck = document.getElementById('cfgTpoShowIb');
     this.ibDurationSelect = document.getElementById('cfgTpoIbDuration');
     this.extendPocCheck = document.getElementById('cfgTpoExtendPoc');
+    this.maxRaysInput = document.getElementById('cfgTpoMaxRays');
     this.singlePrintsCheck = document.getElementById('cfgTpoSinglePrints');
     this.poorExtremesCheck = document.getElementById('cfgTpoPoorExtremes');
     this.bracketMinSelect = document.getElementById('cfgTpoBracketMin');
@@ -97,6 +103,7 @@ export class TPOSettingsModal {
   _applySettingsToUI() {
     if (this.profileTypeSelect) this.profileTypeSelect.value = this.settings.profileType;
     if (this.positionSelect) this.positionSelect.value = this.settings.profilePosition;
+    if (this.densityModeSelect) this.densityModeSelect.value = this.settings.densityMode || 'ADAPTIVE';
 
     if (this.widthRange) {
       const pct = Math.round(this.settings.profileWidthRatio * 100);
@@ -112,6 +119,7 @@ export class TPOSettingsModal {
 
     if (this.paletteSelect) this.paletteSelect.value = this.settings.palette;
     if (this.showLettersCheck) this.showLettersCheck.checked = !!this.settings.showLetters;
+    if (this.showMarginStripCheck) this.showMarginStripCheck.checked = !!this.settings.showCompactMarginStrip;
 
     if (this.showPocCheck) this.showPocCheck.checked = !!this.settings.showPoc;
     if (this.showVolPocCheck) this.showVolPocCheck.checked = !!this.settings.showVolPoc;
@@ -126,6 +134,7 @@ export class TPOSettingsModal {
     if (this.showIbCheck) this.showIbCheck.checked = !!this.settings.showIb;
     if (this.ibDurationSelect) this.ibDurationSelect.value = String(this.settings.ibDuration);
     if (this.extendPocCheck) this.extendPocCheck.checked = !!this.settings.extendPocRays;
+    if (this.maxRaysInput) this.maxRaysInput.value = String(this.settings.maxNakedPocRays || 3);
     if (this.singlePrintsCheck) this.singlePrintsCheck.checked = !!this.settings.showSinglePrints;
     if (this.poorExtremesCheck) this.poorExtremesCheck.checked = !!this.settings.showPoorExtremes;
     if (this.bracketMinSelect) this.bracketMinSelect.value = String(this.settings.bracketMinutes);
@@ -134,10 +143,12 @@ export class TPOSettingsModal {
   _readSettingsFromUI() {
     if (this.profileTypeSelect) this.settings.profileType = this.profileTypeSelect.value;
     if (this.positionSelect) this.settings.profilePosition = this.positionSelect.value;
+    if (this.densityModeSelect) this.settings.densityMode = this.densityModeSelect.value;
     if (this.widthRange) this.settings.profileWidthRatio = parseInt(this.widthRange.value, 10) / 100;
     if (this.opacityRange) this.settings.profileOpacity = parseInt(this.opacityRange.value, 10) / 100;
     if (this.paletteSelect) this.settings.palette = this.paletteSelect.value;
     if (this.showLettersCheck) this.settings.showLetters = this.showLettersCheck.checked;
+    if (this.showMarginStripCheck) this.settings.showCompactMarginStrip = this.showMarginStripCheck.checked;
 
     if (this.showPocCheck) this.settings.showPoc = this.showPocCheck.checked;
     if (this.showVolPocCheck) this.settings.showVolPoc = this.showVolPocCheck.checked;
@@ -147,6 +158,7 @@ export class TPOSettingsModal {
     if (this.showIbCheck) this.settings.showIb = this.showIbCheck.checked;
     if (this.ibDurationSelect) this.settings.ibDuration = parseInt(this.ibDurationSelect.value, 10);
     if (this.extendPocCheck) this.settings.extendPocRays = this.extendPocCheck.checked;
+    if (this.maxRaysInput) this.settings.maxNakedPocRays = parseInt(this.maxRaysInput.value, 10) || 3;
     if (this.singlePrintsCheck) this.settings.showSinglePrints = this.singlePrintsCheck.checked;
     if (this.poorExtremesCheck) this.settings.showPoorExtremes = this.poorExtremesCheck.checked;
     if (this.bracketMinSelect) this.settings.bracketMinutes = parseInt(this.bracketMinSelect.value, 10);

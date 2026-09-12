@@ -408,6 +408,14 @@
         <div class="settings-group">
           <div class="settings-group-title">Profile Placement & Modes</div>
           <div class="form-group">
+            <label>Information Density Mode:</label>
+            <select id="cfgTpoDensityMode" class="form-select">
+              <option value="ADAPTIVE" selected>Adaptive (Automatic LOD by Zoom & Timeframe)</option>
+              <option value="COMPACT">Compact (Reference Levels Only on Micro)</option>
+              <option value="EXPANDED">Expanded (Always Full Distribution)</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label>Profile Mode:</label>
             <select id="cfgTpoProfileType" class="form-select">
               <option value="TPO_VOLUME" selected>TPO + Volume Profile (Adjacent)</option>
@@ -442,6 +450,10 @@
           <div class="form-group-checkbox">
             <input type="checkbox" id="cfgTpoShowLetters" checked>
             <label for="cfgTpoShowLetters">Render Letter Glyphs (A, B, C...) When Zoomed In</label>
+          </div>
+          <div class="form-group-checkbox">
+            <input type="checkbox" id="cfgTpoMarginStrip" checked>
+            <label for="cfgTpoMarginStrip">Show Subtle Margin Strip in Compact Mode (1m)</label>
           </div>
         </div>
 
@@ -478,6 +490,10 @@
           <div class="form-group-checkbox">
             <input type="checkbox" id="cfgTpoExtendPoc" checked>
             <label for="cfgTpoExtendPoc">Extend Untested POC Forward (Naked POC Rays)</label>
+          </div>
+          <div class="form-group">
+            <label>Max Naked POC Rays (Untested levels):</label>
+            <input type="number" id="cfgTpoMaxRays" min="1" max="10" value="3" class="form-input" style="width: 70px; padding: 4px 8px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; color: #fff;">
           </div>
           <div class="form-group-checkbox">
             <input type="checkbox" id="cfgTpoSinglePrints" checked>

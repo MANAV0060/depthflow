@@ -972,6 +972,14 @@ export class ChartEngine {
   setTimeframe(timeframeMs, timeframeStr) {
     this.currentTimeframeMs = timeframeMs;
     this.currentTimeframeStr = timeframeStr;
+    if (this.tpoSeriesView) {
+      this.tpoSeriesView.setOptions({ timeframeStr });
+    }
+    if (this.tpoSeries) {
+      try {
+        this.tpoSeries.applyOptions({ timeframeStr });
+      } catch (e) {}
+    }
     this._updateCountdown();
   }
 
