@@ -53,6 +53,7 @@ export class ChartEngine {
     this.activeCandle = null;
     this._countdownInterval = null;
     this.timeFormat = localStorage.getItem('depthflow_time_format') || '12H';
+    this._pendingTargetSpan = null;
 
     // Live Price Tracker DOM Element References
     this.liveTrackerOverlay = null;
@@ -115,6 +116,11 @@ export class ChartEngine {
             bottom: 0.22
           }
         },
+        handleScale: {
+          mouseWheel: false,
+          pinch: true,
+          axisPressedMouseMove: { time: true, price: true }
+        },
         localization: {
           timeFormatter: (originalTime) => {
             const ts = (typeof originalTime === 'number') ? originalTime : (originalTime && originalTime.timestamp ? originalTime.timestamp : 0);
@@ -127,7 +133,7 @@ export class ChartEngine {
           timeVisible: true,
           secondsVisible: false,
           barSpacing: 105,
-          minBarSpacing: 4,
+          minBarSpacing: 0.55,
           tickMarkFormatter: (time, tickMarkType, locale) => {
             const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
             const d = new Date((ts + 19800) * 1000);
@@ -226,6 +232,7 @@ export class ChartEngine {
       // Synchronize Pan / Zoom with Footprint Canvas & Live Price Tracker
       let summaryTableRaf = null;
       this.chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+        this._pendingTargetSpan = null;
         this._renderCanvasOverlay();
         this._updateLiveTracker();
         if (!summaryTableRaf) {
@@ -261,6 +268,56 @@ export class ChartEngine {
         });
       }
     });
+
+    // Responsive Bounded Wheel Zoom Engine (TradingView Sensitivity & Timeframe Limits)
+    this.container.addEventListener('wheel', (e) => {
+      if (e.shiftKey || !this.chart) return;
+
+      const timeScale = this.chart.timeScale();
+      const currentRange = timeScale.getVisibleLogicalRange();
+      if (!currentRange) return;
+
+      e.preventDefault();
+
+      const rect = this.container.getBoundingClientRect();
+      const mouseX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      
+      let mouseLogical = timeScale.coordinateToLogical(mouseX);
+      if (mouseLogical === null || isNaN(mouseLogical)) {
+        mouseLogical = (currentRange.from + currentRange.to) / 2;
+      }
+
+      const currentSpan = currentRange.to - currentRange.from;
+      if (this._pendingTargetSpan === null || isNaN(this._pendingTargetSpan)) {
+        this._pendingTargetSpan = currentSpan;
+      }
+
+      // Controlled, natural TradingView-like zoom sensitivity (15% step per notch):
+      const normalizedDelta = Math.max(-2, Math.min(2, e.deltaY / 100));
+      const zoomMultiplier = 1.15;
+      const zoomFactor = Math.pow(zoomMultiplier, normalizedDelta);
+
+      // Strict timeframe zoom-out ceiling:
+      // On 1m: strictly capped to ~2 days (2,880 candles max)
+      // Minimum zoomed in: 4 candles
+      const minSpan = 4;
+      const maxBars = this._getMaxVisibleBarsForTimeframe();
+      this._pendingTargetSpan = Math.max(minSpan, Math.min(maxBars, this._pendingTargetSpan * zoomFactor));
+
+      const leftRatio = (mouseLogical - currentRange.from) / currentSpan;
+      const rightRatio = (currentRange.to - mouseLogical) / currentSpan;
+
+      const newFrom = mouseLogical - this._pendingTargetSpan * leftRatio;
+      const newTo = mouseLogical + this._pendingTargetSpan * rightRatio;
+
+      timeScale.setVisibleLogicalRange({
+        from: newFrom,
+        to: newTo
+      });
+
+      this._renderCanvasOverlay();
+      this._updateLiveTracker();
+    }, { passive: false });
 
     // Interactive Big Trades inspection tooltip on hover & click
     const tooltipEl = document.getElementById('bigTradeTooltip');
@@ -634,6 +691,38 @@ export class ChartEngine {
     return `${day} ${mon} '${yr}  ${timeStr}`;
   }
 
+  _getMaxVisibleBarsForTimeframe() {
+    const tf = (this.currentTimeframeStr || '1m').toLowerCase();
+    switch (tf) {
+      case '1m':
+        // Exactly 2 full trading days of 1-minute bars on one screen (48 hours = 2,880 mins)
+        return 2880;
+      case '5m':
+        // ~1 to 2 weeks of 5-minute bars (7 days = 2,016 bars)
+        return 2016;
+      case '15m':
+        // ~2 to 3 weeks of 15-minute bars
+        return 1920;
+      case '30m':
+        return 1500;
+      case '1h':
+        return 1200;
+      case '4h':
+        return 800;
+      case 'd':
+        return 500;
+      default:
+        return 2880;
+    }
+  }
+
+  _getMinBarSpacingForTimeframe() {
+    const maxBars = this._getMaxVisibleBarsForTimeframe();
+    const rect = this.container ? this.container.getBoundingClientRect() : null;
+    const w = (rect && rect.width > 0) ? rect.width : 1600;
+    return Math.max(0.55, Math.min(1.2, w / maxBars));
+  }
+
   setTimeFormat(format) {
     if (format !== '12H' && format !== '24H') return;
     this.timeFormat = format;
@@ -738,8 +827,7 @@ export class ChartEngine {
       }
       if (this.chart) {
         this.chart.timeScale().applyOptions({
-          barSpacing: 24,
-          minBarSpacing: 3
+          minBarSpacing: 0.15
         });
       }
       if (summaryTable) summaryTable.style.display = 'none';
@@ -755,8 +843,7 @@ export class ChartEngine {
       }
       if (this.chart) {
         this.chart.timeScale().applyOptions({
-          barSpacing: 14,
-          minBarSpacing: 3
+          minBarSpacing: 0.15
         });
       }
       if (summaryTable) summaryTable.style.display = 'none';
@@ -772,11 +859,12 @@ export class ChartEngine {
       }
       if (this.chart) {
         this.chart.timeScale().applyOptions({
-          barSpacing: 85,
-          minBarSpacing: 6
+          minBarSpacing: 0.15
         });
         const total = this.candles.length;
-        if (total > 0) {
+        if (total > 0 && !this._hasInitiallyFocused) {
+          this._hasInitiallyFocused = true;
+          this.chart.timeScale().applyOptions({ barSpacing: 85 });
           this.chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, total - 14),
             to: total + 1
@@ -815,7 +903,7 @@ export class ChartEngine {
       }
 
       if (this.chart && this.chartMode === 'FOOTPRINT') {
-        this.chart.timeScale().applyOptions({ barSpacing: 85, minBarSpacing: 4 });
+        this.chart.timeScale().applyOptions({ minBarSpacing: 0.15 });
       }
     } else {
       if (overviewPane) overviewPane.classList.add('hidden');
@@ -823,7 +911,7 @@ export class ChartEngine {
       if (footprintPaneTag) footprintPaneTag.style.display = 'none';
 
       if (this.chart && this.chartMode === 'FOOTPRINT') {
-        this.chart.timeScale().applyOptions({ minBarSpacing: 4 });
+        this.chart.timeScale().applyOptions({ minBarSpacing: 0.15 });
       }
     }
 
@@ -891,7 +979,7 @@ export class ChartEngine {
           timeVisible: true,
           secondsVisible: false,
           barSpacing: 6,
-          minBarSpacing: 2,
+          minBarSpacing: 0.1,
           tickMarkFormatter: (time, tickMarkType, locale) => {
             const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
             const d = new Date((ts + 19800) * 1000);
@@ -1160,6 +1248,13 @@ export class ChartEngine {
         this.tpoSeries.applyOptions({ timeframeStr });
       } catch (e) {}
     }
+    if (this.chart) {
+      try {
+        this.chart.timeScale().applyOptions({
+          minBarSpacing: this._getMinBarSpacingForTimeframe()
+        });
+      } catch (e) {}
+    }
     this._updateCountdown();
   }
 
@@ -1278,10 +1373,10 @@ export class ChartEngine {
       try {
         this.chart.priceScale('right').applyOptions({ autoScale: true });
         if (this.chartMode === 'FOOTPRINT') {
-          this.chart.timeScale().applyOptions({ barSpacing: 85, minBarSpacing: 6 });
           const total = seriesData.length;
           if (total > 0 && !this._hasInitiallyFocused) {
             this._hasInitiallyFocused = true;
+            this.chart.timeScale().applyOptions({ barSpacing: 85, minBarSpacing: 0.15 });
             // Automatically focus on latest candles so footprints are immediately in full view
             this.chart.timeScale().setVisibleLogicalRange({
               from: Math.max(0, total - 14),
@@ -1291,6 +1386,7 @@ export class ChartEngine {
         } else {
           if (!this._hasInitiallyFocused) {
             this._hasInitiallyFocused = true;
+            this.chart.timeScale().applyOptions({ minBarSpacing: 0.15 });
             this.chart.timeScale().fitContent();
           }
         }

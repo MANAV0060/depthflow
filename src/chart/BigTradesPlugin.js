@@ -45,7 +45,7 @@ export class BigTradesPaneRenderer {
     }
 
     // Progressive scale factor based on viewport zoom level (prevents huge bubbles when zoomed out)
-    const zoomScale = Math.max(0.45, Math.min(1.2, barSpacing / 75));
+    const zoomScale = Math.max(0.12, Math.min(1.2, barSpacing / 75));
 
     for (let i = startIndex; i < endIndex; i++) {
       const bar = this._data.bars[i];
@@ -64,7 +64,7 @@ export class BigTradesPaneRenderer {
 
         const isBuy = trade.side === 'BUY';
         const baseRadius = trade.radius || 12;
-        const scaledRadius = Math.max(6, Math.min(36, Math.round(baseRadius * zoomScale)));
+        const scaledRadius = Math.max(2, Math.min(36, Math.round(baseRadius * zoomScale)));
 
         // 1. Draw Translucent Glow Background (Low interference, high contrast)
         ctx.save();
@@ -83,12 +83,14 @@ export class BigTradesPaneRenderer {
         ctx.fill();
         ctx.stroke();
 
-        // 2. Secondary outer subtle pulse ring
-        ctx.beginPath();
-        ctx.arc(x, y, scaledRadius + 2.5, 0, Math.PI * 2);
-        ctx.strokeStyle = isBuy ? 'rgba(14, 242, 184, 0.35)' : 'rgba(255, 82, 100, 0.35)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
+        // 2. Secondary outer subtle pulse ring (only when zoomed in enough)
+        if (barSpacing >= 8) {
+          ctx.beginPath();
+          ctx.arc(x, y, scaledRadius + 2.5, 0, Math.PI * 2);
+          ctx.strokeStyle = isBuy ? 'rgba(14, 242, 184, 0.35)' : 'rgba(255, 82, 100, 0.35)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
 
         // 3. Render Volume Text Label inside circle if size & zoom permit
         if (barSpacing >= 45 && scaledRadius >= 13) {

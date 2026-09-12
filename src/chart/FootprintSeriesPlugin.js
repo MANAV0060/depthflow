@@ -28,7 +28,7 @@ export class FootprintSeriesPaneRenderer {
     if (!this._data || !this._data.bars || this._data.bars.length === 0) return;
 
     const barSpacing = this._data.barSpacing || 75;
-    const actualWidth = Math.max(6, Math.min(220, Math.floor(barSpacing * 0.88)));
+    const actualWidth = Math.max(1, Math.min(220, Math.floor(barSpacing * 0.88)));
     const lodMode = actualWidth < 18 ? 'MACRO' : (actualWidth < 34 ? 'PROFILE' : 'DETAILED');
     const imbalanceRatio = (this._options && this._options.imbalanceRatio) || 3.0;
     const theme = (this._options && this._options.theme) || 'DARK';
@@ -126,12 +126,15 @@ export class FootprintSeriesPaneRenderer {
     // Body
     const topBodyY = Math.min(openY, closeY);
     const bottomBodyY = Math.max(openY, closeY);
-    const bodyHeight = Math.max(2, bottomBodyY - topBodyY);
-    const bodyWidth = Math.max(3, Math.min(width * 0.75, 18));
+    const bodyHeight = Math.max(1, bottomBodyY - topBodyY);
+    const bodyWidth = Math.max(1, Math.min(width * 0.75, 18));
     const bodyX = Math.floor(x - bodyWidth / 2);
 
     ctx.fillStyle = color;
     ctx.fillRect(bodyX, topBodyY, bodyWidth, bodyHeight);
+
+    // If zoomed out to dense macro view, skip heavy per-cell glow and dots for 60fps performance
+    if (width < 8) return;
 
     // Delta Strength Glow / Absorption highlight
     const totalVol = candle.totalVolume || 0;
