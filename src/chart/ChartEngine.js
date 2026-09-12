@@ -52,6 +52,7 @@ export class ChartEngine {
     this.prevPrice = null;
     this.activeCandle = null;
     this._countdownInterval = null;
+    this.timeFormat = localStorage.getItem('depthflow_time_format') || '12H';
 
     // Live Price Tracker DOM Element References
     this.liveTrackerOverlay = null;
@@ -117,14 +118,7 @@ export class ChartEngine {
         localization: {
           timeFormatter: (originalTime) => {
             const ts = (typeof originalTime === 'number') ? originalTime : (originalTime && originalTime.timestamp ? originalTime.timestamp : 0);
-            const d = new Date((ts + 19800) * 1000);
-            const day = String(d.getUTCDate()).padStart(2, '0');
-            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-            const mon = monthNames[d.getUTCMonth()];
-            const yr = String(d.getUTCFullYear()).slice(-2);
-            const hrs = String(d.getUTCHours()).padStart(2, '0');
-            const mins = String(d.getUTCMinutes()).padStart(2, '0');
-            return `${day} ${mon} '${yr}  ${hrs}:${mins}`;
+            return this._formatFullDateTimeIST(ts);
           },
           dateFormat: 'dd MMM \'yy'
         },
@@ -137,15 +131,14 @@ export class ChartEngine {
           tickMarkFormatter: (time, tickMarkType, locale) => {
             const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
             const d = new Date((ts + 19800) * 1000);
-            const hrs = String(d.getUTCHours()).padStart(2, '0');
-            const mins = String(d.getUTCMinutes()).padStart(2, '0');
             const day = String(d.getUTCDate()).padStart(2, '0');
             const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
             const mon = monthNames[d.getUTCMonth()];
             if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
             if (tickMarkType === 1) return `${mon}`;
             if (tickMarkType === 2) return `${day} ${mon}`;
-            return `${hrs}:${mins}`;
+            if (tickMarkType === 4) return this._formatTimeIST(ts, true);
+            return this._formatTimeIST(ts, false);
           }
         }
       });
@@ -318,8 +311,7 @@ export class ChartEngine {
           const sideColor = isBuy ? '#089981' : '#F23645';
           const volStr = hitTrade.volume ? Number(hitTrade.volume).toLocaleString() : '--';
           const priceStr = Number(hitTrade.price).toFixed(hitTrade.price > 100 ? 2 : 5);
-          const d = new Date(hitCandle.startTime + 19800000);
-          const candleTimeStr = `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')} IST`;
+          const candleTimeStr = `${this._formatTimeIST(Math.floor(hitCandle.startTime / 1000), true)} (IST)`;
 
           tooltipEl.innerHTML = `
             <div class="bt-tooltip-hdr" style="color: ${sideColor}">
@@ -615,6 +607,81 @@ export class ChartEngine {
     return Math.round(v).toString();
   }
 
+  _formatTimeIST(timestampSec, withSeconds = false) {
+    const d = new Date((timestampSec + 19800) * 1000);
+    const rawHours = d.getUTCHours();
+    const mins = String(d.getUTCMinutes()).padStart(2, '0');
+    const secs = String(d.getUTCSeconds()).padStart(2, '0');
+
+    if (this.timeFormat === '12H') {
+      const ampm = rawHours >= 12 ? 'PM' : 'AM';
+      const h12 = rawHours % 12 || 12;
+      const hStr = String(h12).padStart(2, '0');
+      return withSeconds ? `${hStr}:${mins}:${secs} ${ampm}` : `${hStr}:${mins} ${ampm}`;
+    } else {
+      const hStr = String(rawHours).padStart(2, '0');
+      return withSeconds ? `${hStr}:${mins}:${secs}` : `${hStr}:${mins}`;
+    }
+  }
+
+  _formatFullDateTimeIST(timestampSec) {
+    const d = new Date((timestampSec + 19800) * 1000);
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const mon = monthNames[d.getUTCMonth()];
+    const yr = String(d.getUTCFullYear()).slice(-2);
+    const timeStr = this._formatTimeIST(timestampSec, false);
+    return `${day} ${mon} '${yr}  ${timeStr}`;
+  }
+
+  setTimeFormat(format) {
+    if (format !== '12H' && format !== '24H') return;
+    this.timeFormat = format;
+    try {
+      localStorage.setItem('depthflow_time_format', format);
+    } catch (e) {}
+
+    const pill = document.getElementById('timeFormatPill');
+    if (pill) pill.textContent = format;
+    const hdrBtn = document.getElementById('timeFormatToggleBtn');
+    if (hdrBtn) hdrBtn.textContent = `🕒 ${format}`;
+
+    const updateChartOpts = (c) => {
+      if (!c) return;
+      c.applyOptions({
+        localization: {
+          timeFormatter: (originalTime) => {
+            const ts = (typeof originalTime === 'number') ? originalTime : (originalTime && originalTime.timestamp ? originalTime.timestamp : 0);
+            return this._formatFullDateTimeIST(ts);
+          }
+        },
+        timeScale: {
+          tickMarkFormatter: (time, tickMarkType, locale) => {
+            const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
+            const d = new Date((ts + 19800) * 1000);
+            const day = String(d.getUTCDate()).padStart(2, '0');
+            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const mon = monthNames[d.getUTCMonth()];
+            if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
+            if (tickMarkType === 1) return `${mon}`;
+            if (tickMarkType === 2) return `${day} ${mon}`;
+            if (tickMarkType === 4) return this._formatTimeIST(ts, true);
+            return this._formatTimeIST(ts, false);
+          }
+        }
+      });
+    };
+
+    updateChartOpts(this.chart);
+    updateChartOpts(this.overviewChart);
+  }
+
+  toggleTimeFormat() {
+    const next = this.timeFormat === '12H' ? '24H' : '12H';
+    this.setTimeFormat(next);
+    return next;
+  }
+
   setFootprintStyle(style) {
     this.footprintStyle = style;
     if (this.footprintSeriesView) {
@@ -815,14 +882,7 @@ export class ChartEngine {
         localization: {
           timeFormatter: (originalTime) => {
             const ts = (typeof originalTime === 'number') ? originalTime : (originalTime && originalTime.timestamp ? originalTime.timestamp : 0);
-            const d = new Date((ts + 19800) * 1000);
-            const day = String(d.getUTCDate()).padStart(2, '0');
-            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-            const mon = monthNames[d.getUTCMonth()];
-            const yr = String(d.getUTCFullYear()).slice(-2);
-            const hrs = String(d.getUTCHours()).padStart(2, '0');
-            const mins = String(d.getUTCMinutes()).padStart(2, '0');
-            return `${day} ${mon} '${yr}  ${hrs}:${mins}`;
+            return this._formatFullDateTimeIST(ts);
           },
           dateFormat: 'dd MMM \'yy'
         },
@@ -835,15 +895,14 @@ export class ChartEngine {
           tickMarkFormatter: (time, tickMarkType, locale) => {
             const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
             const d = new Date((ts + 19800) * 1000);
-            const hrs = String(d.getUTCHours()).padStart(2, '0');
-            const mins = String(d.getUTCMinutes()).padStart(2, '0');
             const day = String(d.getUTCDate()).padStart(2, '0');
             const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
             const mon = monthNames[d.getUTCMonth()];
             if (tickMarkType === 0) return `${d.getUTCFullYear()}`;
             if (tickMarkType === 1) return `${mon}`;
             if (tickMarkType === 2) return `${day} ${mon}`;
-            return `${hrs}:${mins}`;
+            if (tickMarkType === 4) return this._formatTimeIST(ts, true);
+            return this._formatTimeIST(ts, false);
           }
         }
       });
@@ -1636,7 +1695,10 @@ export class ChartEngine {
           <div class="live-price-num" id="livePriceNum">--</div>
           <div class="live-price-timer" id="livePriceTimer">00:00</div>
         </div>
-        <div class="tv-timezone-badge" id="chartTimezoneBadge" title="Chart Timezone: Indian Standard Time (UTC+5:30)">UTC+5:30 (Kolkata)</div>
+        <div class="tv-timezone-badge" id="chartTimezoneBadge" title="Click to toggle 12h / 24h format">
+          <span>UTC+5:30 (Kolkata)</span>
+          <span class="time-format-pill" id="timeFormatPill">${this.timeFormat}</span>
+        </div>
       `;
       this.container.appendChild(overlay);
     }
@@ -1646,6 +1708,15 @@ export class ChartEngine {
     this.livePriceBadge = document.getElementById('livePriceBadge');
     this.livePriceNum = document.getElementById('livePriceNum');
     this.livePriceTimer = document.getElementById('livePriceTimer');
+
+    const tzBadge = document.getElementById('chartTimezoneBadge');
+    if (tzBadge && !tzBadge._hasBoundToggle) {
+      tzBadge._hasBoundToggle = true;
+      tzBadge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleTimeFormat();
+      });
+    }
 
     if (this._countdownInterval) clearInterval(this._countdownInterval);
     this._countdownInterval = setInterval(() => {

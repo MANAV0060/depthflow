@@ -302,6 +302,19 @@ class DepthflowApp {
       });
     }
 
+    // 12H / 24H Time Format Switcher in Header
+    const timeFormatToggleBtn = document.getElementById('timeFormatToggleBtn');
+    if (timeFormatToggleBtn) {
+      const currentFormat = this.chartEngine ? this.chartEngine.timeFormat : (localStorage.getItem('depthflow_time_format') || '12H');
+      timeFormatToggleBtn.textContent = `🕒 ${currentFormat}`;
+      timeFormatToggleBtn.addEventListener('click', () => {
+        if (this.chartEngine) {
+          const next = this.chartEngine.toggleTimeFormat();
+          timeFormatToggleBtn.textContent = `🕒 ${next}`;
+        }
+      });
+    }
+
     // Theme Switcher in Settings Modal
     const themeSelect = document.getElementById('themeSelect');
     if (themeSelect) {

@@ -1286,15 +1286,40 @@ body.light-theme .bt-val.source {
   font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif;
   font-size: 9.5px;
   font-weight: 600;
-  color: #787b86;
-  background: rgba(19, 23, 34, 0.85);
-  padding: 1px 6px;
-  border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  pointer-events: none;
+  color: #94a3b8;
+  background: rgba(19, 23, 34, 0.88);
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  pointer-events: auto;
+  cursor: pointer;
   z-index: 5;
   letter-spacing: 0.3px;
   user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.18s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.tv-timezone-badge:hover {
+  background: rgba(30, 41, 59, 0.95);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #f1f5f9;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+.tv-timezone-badge .time-format-pill {
+  background: #0284c7;
+  color: #ffffff;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  line-height: 13px;
+  text-transform: uppercase;
 }
 
 /* ==========================================================================
