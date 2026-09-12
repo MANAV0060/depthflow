@@ -831,6 +831,18 @@ export class ChartEngine {
     const isTpo = mode === 'TPO';
     const summaryTable = document.getElementById('tvSummaryTable');
 
+    if (this.tpoOptions) {
+      this.tpoOptions.chartMode = mode;
+    }
+    if (this.tpoSeriesView) {
+      this.tpoSeriesView.setOptions({ chartMode: mode });
+    }
+    if (this.tpoSeries) {
+      try {
+        this.tpoSeries.applyOptions({ chartMode: mode });
+      } catch (e) {}
+    }
+
     if (isTpo) {
       if (this.candlestickSeries) {
         this.candlestickSeries.applyOptions({ visible: true });

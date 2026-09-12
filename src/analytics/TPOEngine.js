@@ -358,32 +358,80 @@ export class TPOEngine {
     if (options.ibPeriods) this.ibPeriods = options.ibPeriods;
   }
 
-  processCandles(candles, symbol = 'EUR/USD') {
+  setTimeframe(timeframeStr) {
+    this.timeframeStr = timeframeStr;
+  }
+
+  processCandles(candles, symbol = 'EUR/USD', timeframeStr = null) {
     this.symbol = symbol;
+    if (timeframeStr) this.timeframeStr = timeframeStr;
+    const currentTf = (this.timeframeStr || '1m').toLowerCase();
     this.sessions = [];
     if (!candles || candles.length === 0) return this.sessions;
 
     const sorted = [...candles].sort((a, b) => a.startTime - b.startTime);
 
-    // Group candles into Sessions (Daily 00:00:00 UTC)
     const sessionMap = new Map();
 
-    sorted.forEach(c => {
-      const d = new Date(c.startTime);
-      const sessionKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-      
-      let sessionData = sessionMap.get(sessionKey);
-      if (!sessionData) {
-        const sessionStartMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-        sessionData = {
-          sessionKey,
-          sessionStartMs,
-          candles: []
-        };
-        sessionMap.set(sessionKey, sessionData);
-      }
-      sessionData.candles.push(c);
-    });
+    if (currentTf === '1m') {
+      // FIX #2: Institutional Market Sessions for 1m timeframe:
+      // Asia: 00:00 - 08:00 UTC
+      // London: 08:00 - 16:00 UTC
+      // New York: 16:00 - 24:00 UTC
+      // Provides 3 well-balanced, sculpted ~8-hour auction sessions per day on 1m
+      sorted.forEach(c => {
+        const d = new Date(c.startTime);
+        const y = d.getUTCFullYear();
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        const h = d.getUTCHours();
+        
+        let sessName = 'Asia';
+        let sessHour = 0;
+        if (h >= 16) {
+          sessName = 'New York';
+          sessHour = 16;
+        } else if (h >= 8) {
+          sessName = 'London';
+          sessHour = 8;
+        } else {
+          sessName = 'Asia';
+          sessHour = 0;
+        }
+
+        const sessionKey = `${y}-${m}-${day} [${sessName}]`;
+        let sessionData = sessionMap.get(sessionKey);
+        if (!sessionData) {
+          const sessionStartMs = Date.UTC(y, d.getUTCMonth(), d.getUTCDate(), sessHour, 0, 0);
+          sessionData = {
+            sessionKey,
+            sessionStartMs,
+            candles: []
+          };
+          sessionMap.set(sessionKey, sessionData);
+        }
+        sessionData.candles.push(c);
+      });
+    } else {
+      // PRESERVE EXISTING BEHAVIOR EXACTLY for all other timeframes (5m, 15m, 30m, 1h, 4h, D)
+      // Group candles into Daily Sessions (00:00:00 UTC)
+      sorted.forEach(c => {
+        const d = new Date(c.startTime);
+        const sessionKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+        
+        let sessionData = sessionMap.get(sessionKey);
+        if (!sessionData) {
+          const sessionStartMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+          sessionData = {
+            sessionKey,
+            sessionStartMs,
+            candles: []
+          };
+          sessionMap.set(sessionKey, sessionData);
+        }
+        sessionData.candles.push(c);
+      });
+    }
 
     const sessionList = [];
     const keys = Array.from(sessionMap.keys());

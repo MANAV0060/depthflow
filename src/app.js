@@ -214,7 +214,7 @@ class DepthflowApp {
       }
       if (this.chartEngine) {
         if (mode === 'TPO' && this.tpoEngine) {
-          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol);
+          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol, this.currentTimeframeStr);
           this.chartEngine.setTpoSessions(sessions);
         }
         this.chartEngine.setChartMode(mode);
@@ -517,6 +517,10 @@ class DepthflowApp {
       this.bigTradesEngine.setTimeframe(timeframeStr, timeframeMs);
     }
 
+    if (this.tpoEngine) {
+      this.tpoEngine.setTimeframe(timeframeStr);
+    }
+
     const legTf = document.getElementById('legendTf');
     if (legTf) legTf.textContent = timeframeStr;
 
@@ -557,7 +561,7 @@ class DepthflowApp {
     }
 
     if (this.tpoEngine) {
-      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol);
+      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol, this.currentTimeframeStr);
       if (this.chartEngine) {
         this.chartEngine.setTpoSessions(sessions);
       }
@@ -605,7 +609,7 @@ class DepthflowApp {
       this.chartEngine.prependCandles(allCandles);
     }
     if (this.tpoEngine) {
-      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol);
+      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol, this.currentTimeframeStr);
       if (this.chartEngine) {
         this.chartEngine.setTpoSessions(sessions);
       }
@@ -731,7 +735,7 @@ class DepthflowApp {
     // Dynamic Live TPO Profile Refresh (Throttled every 3.5s)
     if (this.tpoEngine && (!this._lastTpoUpdate || Date.now() - this._lastTpoUpdate > 3500)) {
       this._lastTpoUpdate = Date.now();
-      const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol);
+      const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol, this.currentTimeframeStr);
       if (this.chartEngine) {
         this.chartEngine.setTpoSessions(sessions);
       }
