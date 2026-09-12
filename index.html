@@ -47,12 +47,21 @@
 
       <div class="divider-v"></div>
 
-      <!-- Chart View Mode (Footprint vs Normal Candlestick) -->
+      <!-- Chart View Mode (Footprint vs TPO vs Normal Candlestick) -->
       <div class="control-item">
         <select id="chartModeSelect">
           <option value="FOOTPRINT" selected>Footprint Chart</option>
+          <option value="TPO">TPO Profile</option>
           <option value="CANDLESTICK">Candlestick</option>
         </select>
+      </div>
+
+      <!-- Quick TPO Mode Toggle Button -->
+      <div class="control-item">
+        <button id="tpoQuickBtn" class="btn-toggle" title="Toggle Time Price Opportunity (TPO / Market Profile)">
+          <span class="btn-toggle-dot"></span>
+          <span>TPO</span>
+        </button>
       </div>
 
       <!-- Footprint Mode Selector (Profile vs Delta vs Cluster) -->

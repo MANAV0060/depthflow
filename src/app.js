@@ -12,6 +12,7 @@ import { AdaptiveClassifier } from './analytics/AdaptiveClassifier.js';
 import { FootprintAggregator } from './analytics/FootprintAggregator.js';
 import { PatternDetector } from './analytics/PatternDetector.js';
 import { BigTradesEngine, DetectionMethod, BigTradeEventType } from './analytics/BigTradesEngine.js';
+import { TPOEngine } from './analytics/TPOEngine.js';
 import { ReplayEngine } from './data/ReplayEngine.js';
 import { DiagnosticsDrawer } from './ui/DiagnosticsDrawer.js';
 import { defaultConfig } from './analytics/OrderFlowConfig.js';
@@ -26,6 +27,8 @@ class DepthflowApp {
     this.classifier = new AdaptiveClassifier();
     this.bigTradesEngine = new BigTradesEngine();
     this.bigTradesVisible = true;
+    this.tpoEngine = new TPOEngine();
+    this._lastTpoUpdate = 0;
 
     const symSelect = document.getElementById('symbolSelect');
     this.currentSymbol = (symSelect && symSelect.value) ? symSelect.value : 'EUR/USD';
@@ -163,18 +166,41 @@ class DepthflowApp {
       });
     });
 
-    // Chart View Mode (Footprint vs Normal Candlestick)
+    // Chart View Mode (Footprint vs TPO vs Normal Candlestick)
     const chartModeSelect = document.getElementById('chartModeSelect');
+    const tpoQuickBtn = document.getElementById('tpoQuickBtn');
     const styleContainer = document.getElementById('footprintStyleContainer');
+
+    const updateChartModeUI = (mode) => {
+      if (styleContainer) {
+        styleContainer.style.display = (mode === 'CANDLESTICK' || mode === 'TPO') ? 'none' : 'flex';
+      }
+      if (tpoQuickBtn) {
+        tpoQuickBtn.classList.toggle('active', mode === 'TPO');
+      }
+      if (chartModeSelect && chartModeSelect.value !== mode) {
+        chartModeSelect.value = mode;
+      }
+      if (this.chartEngine) {
+        if (mode === 'TPO' && this.tpoEngine) {
+          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol);
+          this.chartEngine.setTpoSessions(sessions);
+        }
+        this.chartEngine.setChartMode(mode);
+      }
+    };
+
     if (chartModeSelect) {
       chartModeSelect.addEventListener('change', (e) => {
-        const mode = e.target.value;
-        if (styleContainer) {
-          styleContainer.style.display = mode === 'CANDLESTICK' ? 'none' : 'flex';
-        }
-        if (this.chartEngine) {
-          this.chartEngine.setChartMode(mode);
-        }
+        updateChartModeUI(e.target.value);
+      });
+    }
+
+    if (tpoQuickBtn) {
+      tpoQuickBtn.addEventListener('click', () => {
+        const currentMode = this.chartEngine ? this.chartEngine.chartMode : 'FOOTPRINT';
+        const nextMode = currentMode === 'TPO' ? 'FOOTPRINT' : 'TPO';
+        updateChartModeUI(nextMode);
       });
     }
 
@@ -486,6 +512,13 @@ class DepthflowApp {
       this.chartEngine.setCandles(allCandles);
     }
 
+    if (this.tpoEngine) {
+      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol);
+      if (this.chartEngine) {
+        this.chartEngine.setTpoSessions(sessions);
+      }
+    }
+
     if (allCandles.length > 0) {
       const lastC = allCandles[allCandles.length - 1];
       this._updateLegend(lastC);
@@ -526,6 +559,12 @@ class DepthflowApp {
     }
     if (this.chartEngine) {
       this.chartEngine.prependCandles(allCandles);
+    }
+    if (this.tpoEngine) {
+      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol);
+      if (this.chartEngine) {
+        this.chartEngine.setTpoSessions(sessions);
+      }
     }
   }
 
@@ -644,6 +683,15 @@ class DepthflowApp {
       this.chartEngine.updateCandle(activeCandle);
     }
     this._updateLegend(activeCandle);
+
+    // Dynamic Live TPO Profile Refresh (Throttled every 3.5s)
+    if (this.tpoEngine && (!this._lastTpoUpdate || Date.now() - this._lastTpoUpdate > 3500)) {
+      this._lastTpoUpdate = Date.now();
+      const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol);
+      if (this.chartEngine) {
+        this.chartEngine.setTpoSessions(sessions);
+      }
+    }
 
     // 4. CVD & Delta Calculation
     const cvdRecord = this.deltaEngine.processCandle(activeCandle);

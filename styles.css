@@ -980,6 +980,17 @@ body {
   box-shadow: 0 0 7px #00e5ff;
 }
 
+#tpoQuickBtn.active {
+  background: rgba(16, 185, 129, 0.16);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.5);
+}
+
+#tpoQuickBtn.active .btn-toggle-dot {
+  background: #10b981;
+  box-shadow: 0 0 7px #10b981;
+}
+
 /* Big Trades Floating Inspector Tooltip */
 .big-trade-tooltip {
   position: absolute;

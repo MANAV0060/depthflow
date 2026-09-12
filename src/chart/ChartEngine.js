@@ -10,6 +10,7 @@
 import { FootprintRenderer } from './FootprintRenderer.js';
 import { FootprintSeriesPaneView } from './FootprintSeriesPlugin.js?v=tv2';
 import { BigTradesPaneView } from './BigTradesPlugin.js?v=tv2';
+import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=tv1';
 import { LiquidationHeatmapRenderer } from './LiquidationHeatmapRenderer.js';
 
 export class ChartEngine {
@@ -30,6 +31,9 @@ export class ChartEngine {
     this.bigTradesSeries = null;
     this.bigTradesSeriesView = null;
     this.bigTradesVisible = true;
+    this.tpoSeries = null;
+    this.tpoSeriesView = null;
+    this.tpoSessions = [];
     this.footprintStyle = 'PROFILE';
     this.theme = 'DARK';
     this.cvdChart = null;
@@ -37,7 +41,7 @@ export class ChartEngine {
     this.footprintRenderer = null;
     this.liquidationRenderer = null;
     this.candles = [];
-    this.chartMode = 'FOOTPRINT'; // 'FOOTPRINT' vs 'CANDLESTICK'
+    this.chartMode = 'FOOTPRINT'; // 'FOOTPRINT' | 'CANDLESTICK' | 'TPO'
     this._hasInitiallyFocused = false;
 
     // Active Symbol & Timeframe Context
@@ -147,7 +151,7 @@ export class ChartEngine {
         priceFormat: defaultPriceFormat
       });
 
-      // Standard Candlestick Series (used when user switches to Candlestick mode)
+      // Standard Candlestick Series (used when user switches to Candlestick mode or TPO background)
       this.candlestickSeries = this.chart.addCandlestickSeries({
         upColor: '#089981',
         downColor: '#F23645',
@@ -158,7 +162,19 @@ export class ChartEngine {
         priceLineVisible: false,
         lastValueVisible: false,
         priceFormat: defaultPriceFormat,
-        visible: this.chartMode === 'CANDLESTICK'
+        visible: this.chartMode === 'CANDLESTICK' || this.chartMode === 'TPO'
+      });
+
+      // Native TradingView Custom Series: Time Price Opportunity (TPO / Market Profile)
+      this.tpoSeriesView = new TPOSeriesPaneView({
+        theme: this.theme,
+        visible: this.chartMode === 'TPO',
+        sessions: this.tpoSessions
+      });
+      this.tpoSeries = this.chart.addCustomSeries(this.tpoSeriesView, {
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceFormat: defaultPriceFormat
       });
 
       // Lower Sub-Pane: CVD Chart
@@ -328,17 +344,50 @@ export class ChartEngine {
     }
   }
 
+  setTpoSessions(sessions) {
+    this.tpoSessions = sessions || [];
+    if (this.tpoSeriesView) {
+      this.tpoSeriesView.setSessions(this.tpoSessions);
+    }
+    if (this.tpoSeries) {
+      try {
+        this.tpoSeries.applyOptions({ sessions: this.tpoSessions });
+      } catch (e) {}
+    }
+  }
+
   setChartMode(mode) {
     this.chartMode = mode;
     const isCandle = mode === 'CANDLESTICK';
+    const isTpo = mode === 'TPO';
     const summaryTable = document.getElementById('tvSummaryTable');
 
-    if (isCandle) {
+    if (isTpo) {
       if (this.candlestickSeries) {
         this.candlestickSeries.applyOptions({ visible: true });
       }
       if (this.footprintSeries) {
         this.footprintSeries.applyOptions({ visible: false });
+      }
+      if (this.tpoSeries) {
+        this.tpoSeries.applyOptions({ visible: true });
+      }
+      if (this.chart) {
+        this.chart.timeScale().applyOptions({
+          barSpacing: 24,
+          minBarSpacing: 3
+        });
+      }
+      if (summaryTable) summaryTable.style.display = 'none';
+    } else if (isCandle) {
+      if (this.candlestickSeries) {
+        this.candlestickSeries.applyOptions({ visible: true });
+      }
+      if (this.footprintSeries) {
+        this.footprintSeries.applyOptions({ visible: false });
+      }
+      if (this.tpoSeries) {
+        this.tpoSeries.applyOptions({ visible: false });
       }
       if (this.chart) {
         this.chart.timeScale().applyOptions({
@@ -353,6 +402,9 @@ export class ChartEngine {
       }
       if (this.footprintSeries) {
         this.footprintSeries.applyOptions({ visible: true });
+      }
+      if (this.tpoSeries) {
+        this.tpoSeries.applyOptions({ visible: false });
       }
       if (this.chart) {
         this.chart.timeScale().applyOptions({
@@ -579,6 +631,12 @@ export class ChartEngine {
     }
     if (this.bigTradesSeries) {
       this.bigTradesSeries.applyOptions({ theme });
+    }
+    if (this.tpoSeriesView) {
+      this.tpoSeriesView.setTheme(theme);
+    }
+    if (this.tpoSeries) {
+      this.tpoSeries.applyOptions({ theme });
     }
     if (this.footprintRenderer) {
       this.footprintRenderer.setTheme(theme);
@@ -813,6 +871,14 @@ export class ChartEngine {
       }
     }
 
+    if (this.tpoSeries) {
+      try {
+        this.tpoSeries.setData(seriesData);
+      } catch (e) {
+        console.warn('[ChartEngine] Error setting tpoSeries data:', e);
+      }
+    }
+
     if (this.overviewSeries) {
       this._syncOverviewData();
     }
@@ -892,6 +958,12 @@ export class ChartEngine {
       } catch (e) {}
     }
 
+    if (this.tpoSeries) {
+      try {
+        this.tpoSeries.setData(seriesData);
+      } catch (e) {}
+    }
+
     if (this.layoutMode === 'SPLIT' && this.overviewSeries) {
       this._syncOverviewData();
     }
@@ -939,6 +1011,12 @@ export class ChartEngine {
     if (this.bigTradesSeries) {
       try {
         this.bigTradesSeries.update(bar);
+      } catch (e) {}
+    }
+
+    if (this.tpoSeries) {
+      try {
+        this.tpoSeries.update(bar);
       } catch (e) {}
     }
 
