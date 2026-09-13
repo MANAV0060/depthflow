@@ -295,10 +295,17 @@ export class FootprintSeriesPaneRenderer {
     ctx.lineTo(x, topY + rowCount * rowHeight);
     ctx.stroke();
 
-    // Micro Delta indicator below
+    // Micro Delta indicator & text below
     const isPosDelta = (candle.totalDelta !== undefined ? candle.totalDelta : 0) >= 0;
     ctx.fillStyle = isPosDelta ? '#089981' : '#F23645';
-    ctx.fillRect(x - 8, bottomY + 3, 16, 2.5);
+    ctx.fillRect(x - 10, bottomY + 3, 20, 2.5);
+    if (width >= 24) {
+      ctx.font = '700 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const sign = isPosDelta ? '+' : '';
+      ctx.fillText(`${sign}${this._formatVol(candle.totalDelta, width)}`, x, bottomY + 7);
+    }
   }
 
   /**
@@ -372,15 +379,7 @@ export class FootprintSeriesPaneRenderer {
     const ladderBottomY = lowerWickBottom - 4;
     const totalH = Math.max(20, ladderBottomY - ladderTopY);
     const calculatedRowH = Math.floor(totalH / rowCount);
-
-    // If vertical candle space is too compressed (< 10px per row), fall back cleanly
-    // to profile silhouette to eliminate unreadable text overlapping
-    if (calculatedRowH < 10) {
-      this._renderProfileSilhouette(ctx, candle, x, width, priceToCoordinate, imbalanceRatio);
-      return;
-    }
-
-    const rowHeight = Math.max(11, calculatedRowH);
+    const rowHeight = Math.max(11, Math.min(32, calculatedRowH));
     const totalLadderHeight = rowCount * rowHeight;
 
     let maxSellInCandle = 1;
@@ -394,6 +393,14 @@ export class FootprintSeriesPaneRenderer {
       if (d > maxAbsDelta) maxAbsDelta = d;
     });
 
+    // Ensure analytical imbalances are computed
+    if (typeof candle.computeImbalances === 'function') {
+      if (!candle.stackedBuyImbalances || candle._lastImbalanceRatio !== imbalanceRatio) {
+        candle.computeImbalances(imbalanceRatio);
+        candle._lastImbalanceRatio = imbalanceRatio;
+      }
+    }
+
     // 5. Render Price Ladder Rows (Bid on Left, Ask on Right)
     const fontPx = Math.min(10, Math.max(7.5, Math.floor(Math.min(rowHeight * 0.55, candleWidth * 0.16))));
     ctx.font = `600 ${fontPx}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace`;
@@ -406,21 +413,9 @@ export class FootprintSeriesPaneRenderer {
       const rowOriginRight = inBody ? bodyRight : x;
       const availableW = Math.max(14, inBody ? (halfW - Math.floor(bodyWidth / 2)) : halfW);
 
-      // Diagonal Imbalances (>= 300%)
-      let hasBuyImbalance = false;
-      let hasSellImbalance = false;
-      if (idx < sortedCells.length - 1) {
-        const lowerCell = sortedCells[idx + 1];
-        if (lowerCell.sellVolume > 0 && cell.buyVolume / lowerCell.sellVolume >= imbalanceRatio) {
-          hasBuyImbalance = true;
-        }
-      }
-      if (idx > 0) {
-        const upperCell = sortedCells[idx - 1];
-        if (upperCell.buyVolume > 0 && cell.sellVolume / upperCell.buyVolume >= imbalanceRatio) {
-          hasSellImbalance = true;
-        }
-      }
+      // Analytical Diagonal Imbalances from engine
+      const hasBuyImbalance = Boolean(cell.hasBuyImbalance);
+      const hasSellImbalance = Boolean(cell.hasSellImbalance);
 
       if (style === 'DELTA') {
         const delta = cell.delta !== undefined ? cell.delta : (cell.buyVolume - cell.sellVolume);
@@ -515,13 +510,50 @@ export class FootprintSeriesPaneRenderer {
     ctx.lineTo(x, ladderTopY + totalLadderHeight);
     ctx.stroke();
 
-    // 8. Subtle Footprint Container Outline
+    // 8. Stacked Imbalances Visual Zones
+    if (candle.stackedBuyImbalances && candle.stackedBuyImbalances.length > 0) {
+      candle.stackedBuyImbalances.forEach(stack => {
+        const topCellIdx = sortedCells.findIndex(c => c.price === stack.startPrice);
+        const botCellIdx = sortedCells.findIndex(c => c.price === stack.endPrice);
+        if (topCellIdx !== -1 && botCellIdx !== -1) {
+          const minY = ladderTopY + Math.min(topCellIdx, botCellIdx) * rowHeight;
+          const maxY = ladderTopY + (Math.max(topCellIdx, botCellIdx) + 1) * rowHeight;
+          const stackH = maxY - minY;
+          // Clean cyan bracket / accent bar on right edge (Buy side)
+          ctx.fillStyle = 'rgba(0, 229, 255, 0.28)';
+          ctx.fillRect(leftX + candleWidth - 3, minY, 3, stackH);
+          ctx.strokeStyle = '#00e5ff';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(leftX + candleWidth - 3, minY, 3, stackH);
+        }
+      });
+    }
+
+    if (candle.stackedSellImbalances && candle.stackedSellImbalances.length > 0) {
+      candle.stackedSellImbalances.forEach(stack => {
+        const topCellIdx = sortedCells.findIndex(c => c.price === stack.startPrice);
+        const botCellIdx = sortedCells.findIndex(c => c.price === stack.endPrice);
+        if (topCellIdx !== -1 && botCellIdx !== -1) {
+          const minY = ladderTopY + Math.min(topCellIdx, botCellIdx) * rowHeight;
+          const maxY = ladderTopY + (Math.max(topCellIdx, botCellIdx) + 1) * rowHeight;
+          const stackH = maxY - minY;
+          // Clean pink bracket / accent bar on left edge (Sell side)
+          ctx.fillStyle = 'rgba(255, 51, 85, 0.28)';
+          ctx.fillRect(leftX, minY, 3, stackH);
+          ctx.strokeStyle = '#ff3355';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(leftX, minY, 3, stackH);
+        }
+      });
+    }
+
+    // 9. Subtle Footprint Container Outline
     ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(0, 0, 0, 0.10)';
     ctx.lineWidth = 1;
     ctx.strokeRect(leftX, ladderTopY, candleWidth, totalLadderHeight);
 
     // 7. Compact Floating Delta Card Below Candle
-    const badgeY = lowerWickBottom + 6;
+    const badgeY = Math.max(lowerWickBottom, ladderTopY + totalLadderHeight) + 6;
     const badgeW = Math.max(48, Math.min(candleWidth, 80));
     const badgeH = 22;
     const badgeX = Math.floor(x - badgeW / 2);

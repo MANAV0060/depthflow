@@ -19,6 +19,17 @@ import { getTickSize } from './FootprintAggregator.js';
 
 export const TPO_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
+export function getDecimalsFromTick(tickSize) {
+  if (!tickSize || isNaN(tickSize)) return 5;
+  const s = tickSize.toString();
+  if (s.includes('e-')) {
+    const parts = s.split('e-');
+    return parseInt(parts[1], 10);
+  }
+  const idx = s.indexOf('.');
+  return idx >= 0 ? s.length - idx - 1 : 0;
+}
+
 // Restrained Institutional Palettes
 export const TPO_PALETTES = {
   // Classic restrained slate / cyan / amber professional palette
@@ -71,9 +82,15 @@ export class TPOSession {
     // Session Status: 'Developing' vs 'Final'
     this.isDeveloping = false;
     this.status = 'Final';
+    this.dataResolution = '1M_BARS';
+    this.provenance = 'TPO_RECONSTRUCTED_1M_OHLC';
 
-    // Map: price -> { price, letters: [], volume: 0, bidVolume: 0, askVolume: 0, delta: 0, isImbalance: false }
+    // Map: price -> { price, letters: [], volume: 0, bidVolume: 0, askVolume: 0, delta: 0, hasImbalance: false }
     this.priceRows = new Map();
+
+    // Chronological Subperiod Extremes & Sequence Tracking
+    this.subperiodExtremes = new Map(); // letter -> { letter, high: -Infinity, low: Infinity, count: 0 }
+    this.subperiodOrder = [];           // Array of bracket letters in chronological order
 
     // Initial Balance (Periods A & B)
     this.ibHigh = null;
@@ -84,15 +101,18 @@ export class TPOSession {
     this.tpoPocCount = 0;
     this.volPoc = null;    // Price with highest Volume (Volume-at-price)
     this.volPocVolume = 0;
-    this.vah = null;       // Value Area High (70%)
-    this.val = null;       // Value Area Low (70%)
+    this.vah = null;       // Value Area High (TPO 70%)
+    this.val = null;       // Value Area Low (TPO 70%)
+    this.volVah = null;    // Volume Value Area High (Volume 70%)
+    this.volVal = null;    // Volume Value Area Low (Volume 70%)
+    this.volumeFidelity = 'BROKER_VOLUME';
 
     // Structural Heuristics & Extremes
-    this.singlePrints = []; // Array of prices with 1 TPO (excluding extreme wick ticks)
-    this.poorHigh = false;  // Extreme high has >= 2 TPOs (heuristic: lack of excess)
-    this.poorLow = false;   // Extreme low has >= 2 TPOs
-    this.excessHigh = false; // Extreme high has 1 TPO with sharp rejection
-    this.excessLow = false;  // Extreme low has 1 TPO with sharp rejection
+    this.singlePrints = []; // Array of prices with 1 TPO in interior body
+    this.poorHigh = false;  // Extreme high without excess / repeated subperiod tests
+    this.poorLow = false;   // Extreme low without excess / repeated subperiod tests
+    this.excessHigh = false; // Extreme high buying/selling rejection tail (>= 2 single-print ticks)
+    this.excessLow = false;  // Extreme low buying/selling rejection tail
 
     // Descriptive Profile Structure Classification (Shape)
     this.profileShape = 'Balanced Profile (D-Shape)';
@@ -104,7 +124,7 @@ export class TPOSession {
   }
 
   _getPriceKey(price) {
-    const decimals = this.tickSize < 0.005 ? 5 : (this.tickSize >= 0.1 ? 2 : 3);
+    const decimals = Math.max(getDecimalsFromTick(this.tickSize), 2);
     const bucket = Math.round(price / this.tickSize) * this.tickSize;
     return parseFloat(bucket.toFixed(decimals));
   }
@@ -115,28 +135,54 @@ export class TPOSession {
     if (candle.high > this.high) this.high = candle.high;
     if (candle.low < this.low) this.low = candle.low;
     if (this.startTime === null || candle.startTime < this.startTime) this.startTime = candle.startTime;
-    if (this.endTime === null || (candle.endTime || candle.startTime + 60000) > this.endTime) {
-      this.endTime = candle.endTime || (candle.startTime + 60000);
+    const candleEndTime = candle.endTime || (candle.startTime + 60000);
+    if (this.endTime === null || candleEndTime > this.endTime) {
+      this.endTime = candleEndTime;
     }
     this.totalVolume += (candle.totalVolume || 0);
 
-    // Calculate period bracket index from session start
-    const bracketMs = this.bracketMinutes * 60 * 1000;
-    const elapsedMs = Math.max(0, candle.startTime - sessionStartMs);
-    const periodIdx = Math.floor(elapsedMs / bracketMs);
-    const letter = TPO_LETTERS[Math.min(periodIdx, TPO_LETTERS.length - 1)];
-
-    // Initial Balance tracking (first `ibPeriods` brackets)
-    if (periodIdx < this.ibPeriods) {
-      if (this.ibHigh === null || candle.high > this.ibHigh) this.ibHigh = candle.high;
-      if (this.ibLow === null || candle.low < this.ibLow) this.ibLow = candle.low;
+    // Track provenance / data resolution
+    const candleDurationMs = (candle.endTime || (candle.startTime + 60000)) - candle.startTime;
+    if (candleDurationMs > 65000) {
+      this.provenance = 'TPO_RECONSTRUCTED_HTF_APPROX';
+      this.dataResolution = 'HTF_BARS';
     }
 
-    // Populate TPO rows across candle price range
+    // Calculate bracket indices spanned by this candle
+    const bracketMs = this.bracketMinutes * 60 * 1000;
+    const startElapsed = Math.max(0, candle.startTime - sessionStartMs);
+    const endElapsed = Math.max(startElapsed, candleEndTime - 1 - sessionStartMs);
+    const startPeriodIdx = Math.floor(startElapsed / bracketMs);
+    const endPeriodIdx = Math.floor(endElapsed / bracketMs);
+
+    const letters = [];
+    for (let pIdx = startPeriodIdx; pIdx <= endPeriodIdx; pIdx++) {
+      const letter = TPO_LETTERS[Math.min(pIdx, TPO_LETTERS.length - 1)];
+      letters.push(letter);
+
+      // Track subperiod extremes per letter
+      let subExt = this.subperiodExtremes.get(letter);
+      if (!subExt) {
+        subExt = { letter, high: -Infinity, low: Infinity, count: 0 };
+        this.subperiodExtremes.set(letter, subExt);
+        this.subperiodOrder.push(letter);
+      }
+      if (candle.high > subExt.high) subExt.high = candle.high;
+      if (candle.low < subExt.low) subExt.low = candle.low;
+      subExt.count++;
+
+      // Initial Balance tracking (first `ibPeriods` brackets)
+      if (pIdx < this.ibPeriods) {
+        if (this.ibHigh === null || candle.high > this.ibHigh) this.ibHigh = candle.high;
+        if (this.ibLow === null || candle.low < this.ibLow) this.ibLow = candle.low;
+      }
+    }
+
+    // Populate TPO rows across candle price range using safe integer stepping
     const minP = this._getPriceKey(candle.low);
     const maxP = this._getPriceKey(candle.high);
     const step = this.tickSize;
-    const decimals = this.tickSize < 0.005 ? 5 : (this.tickSize >= 0.1 ? 2 : 3);
+    const decimals = Math.max(getDecimalsFromTick(this.tickSize), 2);
 
     // Extract footprint cells data if available
     const candleCells = candle.cells ? (Array.isArray(candle.cells) ? candle.cells : Array.from(candle.cells.values())) : [];
@@ -149,19 +195,20 @@ export class TPOSession {
         cellStatsMap.set(k, stat);
       }
       stat.vol += (c.totalVolume || 0);
-      stat.bid += (c.bidVolume || 0);
-      stat.ask += (c.askVolume || 0);
+      stat.bid += (c.buyVolume || c.bidVolume || 0);
+      stat.ask += (c.sellVolume || c.askVolume || 0);
       if (c.isImbalance) stat.isImbalance = true;
     });
 
-    let p = minP;
-    const estimatedRows = Math.max(1, Math.round((maxP - minP) / step) + 1);
+    const steps = Math.max(0, Math.round((maxP - minP) / step));
+    const estimatedRows = steps + 1;
     const avgVolPerRow = (candle.totalVolume || 1000) / estimatedRows;
     const avgBidPerRow = ((candle.totalVolume || 1000) * 0.5) / estimatedRows;
     const avgAskPerRow = ((candle.totalVolume || 1000) * 0.5) / estimatedRows;
 
-    while (p <= maxP + (step * 0.1)) {
-      const priceKey = parseFloat(p.toFixed(decimals));
+    for (let i = 0; i <= steps; i++) {
+      const currentPrice = minP + (i * step);
+      const priceKey = parseFloat(currentPrice.toFixed(decimals));
       let row = this.priceRows.get(priceKey);
       if (!row) {
         row = {
@@ -176,9 +223,11 @@ export class TPOSession {
         this.priceRows.set(priceKey, row);
       }
 
-      if (!row.letters.includes(letter)) {
-        row.letters.push(letter);
-        this.totalTpos++;
+      for (const letter of letters) {
+        if (!row.letters.includes(letter)) {
+          row.letters.push(letter);
+          this.totalTpos++;
+        }
       }
 
       const cellStat = cellStatsMap.get(priceKey);
@@ -193,94 +242,258 @@ export class TPOSession {
         row.askVolume += avgAskPerRow;
       }
       row.delta = row.askVolume - row.bidVolume;
-
-      p += step;
     }
   }
 
-  finalizeAuctionLevels() {
+  finalizeAuctionLevels(prevSession = null) {
     if (this.priceRows.size === 0) return;
 
     const rows = Array.from(this.priceRows.values()).sort((a, b) => b.price - a.price);
+    const midPrice = (this.high + this.low) / 2;
 
-    // 1. Calculate TPO POC (price with greatest TPO count) & Volume POC (price with greatest volume)
+    // 1. Calculate TPO POC (Sierra Chart standard midpoint tie-breaker)
     let maxTpoCount = -1;
-    let maxVol = -1;
-
     rows.forEach(r => {
-      if (r.letters.length > maxTpoCount) {
-        maxTpoCount = r.letters.length;
-        this.tpoPoc = r.price;
-        this.tpoPocCount = r.letters.length;
-      }
-      if (r.volume > maxVol) {
-        maxVol = r.volume;
-        this.volPoc = r.price;
-        this.volPocVolume = r.volume;
-      }
+      if (r.letters.length > maxTpoCount) maxTpoCount = r.letters.length;
     });
 
-    // 2. Steidlmayer 70% Value Area Calculation
-    const targetTpos = Math.floor(this.totalTpos * this.valueAreaPercent);
+    const tpoCandidates = rows.filter(r => r.letters.length === maxTpoCount);
+    tpoCandidates.sort((a, b) => {
+      const distA = Math.abs(a.price - midPrice);
+      const distB = Math.abs(b.price - midPrice);
+      if (Math.abs(distA - distB) > 1e-9) {
+        return distA - distB; // Closest to middle of profile wins
+      }
+      return a.price - b.price; // Equidistant -> lower price wins
+    });
+    this.tpoPoc = tpoCandidates[0].price;
+    this.tpoPocCount = tpoCandidates[0].letters.length;
+
+    // 2. Calculate Volume POC (Sierra Chart standard midpoint tie-breaker)
+    let maxVol = -1;
+    rows.forEach(r => {
+      if (r.volume > maxVol) maxVol = r.volume;
+    });
+
+    const volCandidates = rows.filter(r => r.volume === maxVol);
+    volCandidates.sort((a, b) => {
+      const distA = Math.abs(a.price - midPrice);
+      const distB = Math.abs(b.price - midPrice);
+      if (Math.abs(distA - distB) > 1e-9) {
+        return distA - distB; // Closest to middle of profile wins
+      }
+      return a.price - b.price; // Equidistant -> lower price wins
+    });
+    this.volPoc = volCandidates[0].price;
+    this.volPocVolume = volCandidates[0].volume;
+
+    // 3. TPO Value Area Calculation (Sierra Chart Standard Methodology)
+    // Starting at Point of Control, expand outward 1 row up and 1 row down.
+    // Whichever has greater TPOs is included. On equal count, BOTH rows are included.
+    const targetTpos = this.totalTpos * this.valueAreaPercent;
     const pocIdx = rows.findIndex(r => r.price === this.tpoPoc);
 
     if (pocIdx >= 0) {
       let vaTpos = rows[pocIdx].letters.length;
+      let topVaIdx = pocIdx;
+      let botVaIdx = pocIdx;
       let upIdx = pocIdx - 1;
       let downIdx = pocIdx + 1;
 
       while (vaTpos < targetTpos && (upIdx >= 0 || downIdx < rows.length)) {
-        const upCount = (upIdx >= 0 ? rows[upIdx].letters.length : 0) +
-                        (upIdx - 1 >= 0 ? rows[upIdx - 1].letters.length : 0);
-        const downCount = (downIdx < rows.length ? rows[downIdx].letters.length : 0) +
-                          (downIdx + 1 < rows.length ? rows[downIdx + 1].letters.length : 0);
+        if (upIdx >= 0 && downIdx < rows.length) {
+          const countUp = rows[upIdx].letters.length;
+          const countDown = rows[downIdx].letters.length;
 
-        if (upIdx >= 0 && (downIdx >= rows.length || upCount >= downCount)) {
+          if (countUp > countDown) {
+            vaTpos += countUp;
+            topVaIdx = upIdx;
+            upIdx--;
+          } else if (countDown > countUp) {
+            vaTpos += countDown;
+            botVaIdx = downIdx;
+            downIdx++;
+          } else {
+            // Equal TPO counts: Include BOTH rows and advance both pointers
+            vaTpos += countUp + countDown;
+            topVaIdx = upIdx;
+            botVaIdx = downIdx;
+            upIdx--;
+            downIdx++;
+          }
+        } else if (upIdx >= 0) {
           vaTpos += rows[upIdx].letters.length;
+          topVaIdx = upIdx;
           upIdx--;
         } else if (downIdx < rows.length) {
           vaTpos += rows[downIdx].letters.length;
+          botVaIdx = downIdx;
           downIdx++;
         } else {
           break;
         }
       }
 
-      const topVaIdx = Math.max(0, upIdx + 1);
-      const bottomVaIdx = Math.min(rows.length - 1, downIdx - 1);
       this.vah = rows[topVaIdx].price;
-      this.val = rows[bottomVaIdx].price;
+      this.val = rows[botVaIdx].price;
     } else {
       this.vah = this.high;
       this.val = this.low;
     }
 
-    // 3. Single Prints (rows with only 1 letter, excluding highest and lowest ticks)
+    // 4. Independent Volume Value Area Calculation (70% Volume Target)
+    const targetVol = this.totalVolume * this.valueAreaPercent;
+    const volPocIdx = rows.findIndex(r => r.price === this.volPoc);
+
+    if (volPocIdx >= 0 && this.totalVolume > 0) {
+      let vaVol = rows[volPocIdx].volume;
+      let topVolIdx = volPocIdx;
+      let botVolIdx = volPocIdx;
+      let upVolIdx = volPocIdx - 1;
+      let downVolIdx = volPocIdx + 1;
+
+      while (vaVol < targetVol && (upVolIdx >= 0 || downVolIdx < rows.length)) {
+        if (upVolIdx >= 0 && downVolIdx < rows.length) {
+          const volUp = rows[upVolIdx].volume;
+          const volDown = rows[downVolIdx].volume;
+
+          if (volUp > volDown) {
+            vaVol += volUp;
+            topVolIdx = upVolIdx;
+            upVolIdx--;
+          } else if (volDown > volUp) {
+            vaVol += volDown;
+            botVolIdx = downVolIdx;
+            downVolIdx++;
+          } else {
+            vaVol += volUp + volDown;
+            topVolIdx = upVolIdx;
+            botVolIdx = downVolIdx;
+            upVolIdx--;
+            downVolIdx++;
+          }
+        } else if (upVolIdx >= 0) {
+          vaVol += rows[upVolIdx].volume;
+          topVolIdx = upVolIdx;
+          upVolIdx--;
+        } else if (downVolIdx < rows.length) {
+          vaVol += rows[downVolIdx].volume;
+          botVolIdx = downVolIdx;
+          downVolIdx++;
+        } else {
+          break;
+        }
+      }
+
+      this.volVah = rows[topVolIdx].price;
+      this.volVal = rows[botVolIdx].price;
+    } else {
+      this.volVah = this.high;
+      this.volVal = this.low;
+    }
+
+    // 5. Interior Single Prints (strictly interior body, separating distribution nodes)
     this.singlePrints = [];
-    if (rows.length > 2) {
-      for (let i = 1; i < rows.length - 1; i++) {
+    if (rows.length > 4) {
+      for (let i = 2; i <= rows.length - 3; i++) {
         if (rows[i].letters.length === 1) {
           this.singlePrints.push(rows[i].price);
         }
       }
     }
 
-    // 4. Poor High / Poor Low Heuristic Detection
-    // Methodology: Extreme high or low row with >= 2 TPO letters indicates lack of auction excess / unfinished auction
+    // 6. Classical Sierra Chart / Dalton Poor Extremes & Excess Tails
     if (rows.length > 0) {
       const highRow = rows[0];
       const lowRow = rows[rows.length - 1];
-      this.poorHigh = highRow ? (highRow.letters.length >= 2) : false;
-      this.poorLow = lowRow ? (lowRow.letters.length >= 2) : false;
+      const tolerance = Math.max(this.tickSize * 1.05, this.tickSize);
+      const activeLetter = this.subperiodOrder.length > 0 ? this.subperiodOrder[this.subperiodOrder.length - 1] : null;
 
-      // Excess High / Low: Extreme row has 1 TPO and adjacent has <= 2 TPOs (swift rejection)
-      if (rows.length >= 2) {
-        this.excessHigh = (highRow.letters.length === 1 && rows[1].letters.length <= 2);
-        this.excessLow = (lowRow.letters.length === 1 && rows[rows.length - 2].letters.length <= 2);
+      // Identify subperiods that reached within 1-tick tolerance of session extremes
+      const highSubperiods = [];
+      for (const [letter, ext] of this.subperiodExtremes.entries()) {
+        if (Math.abs(this.high - ext.high) <= tolerance) {
+          highSubperiods.push(letter);
+        }
+      }
+
+      const lowSubperiods = [];
+      for (const [letter, ext] of this.subperiodExtremes.entries()) {
+        if (Math.abs(this.low - ext.low) <= tolerance) {
+          lowSubperiods.push(letter);
+        }
+      }
+
+      // Poor High:
+      // - Multiple TPOs at the extreme price (highRow.letters.length >= 2), OR
+      // - 2 or more distinct subperiods reached within tolerance of high, OR
+      // - Tested previous session high within tolerance (unfinished business).
+      // Guard developing profile: If session is live and active letter is the only visitor to high, it is developing discovery.
+      let isPoorHighCandidate = false;
+      if (highRow && highRow.letters.length >= 2) {
+        isPoorHighCandidate = true;
+      } else if (highSubperiods.length >= 2) {
+        isPoorHighCandidate = true;
+      } else if (prevSession && prevSession.high && Math.abs(this.high - prevSession.high) <= tolerance) {
+        isPoorHighCandidate = true;
+      }
+
+      if (this.isDeveloping && isPoorHighCandidate) {
+        if (highRow && highRow.letters.length === 1 && highSubperiods.length === 1 && highSubperiods[0] === activeLetter) {
+          isPoorHighCandidate = false;
+        }
+      }
+      this.poorHigh = isPoorHighCandidate;
+
+      // Poor Low:
+      let isPoorLowCandidate = false;
+      if (lowRow && lowRow.letters.length >= 2) {
+        isPoorLowCandidate = true;
+      } else if (lowSubperiods.length >= 2) {
+        isPoorLowCandidate = true;
+      } else if (prevSession && prevSession.low && Math.abs(this.low - prevSession.low) <= tolerance) {
+        isPoorLowCandidate = true;
+      }
+
+      if (this.isDeveloping && isPoorLowCandidate) {
+        if (lowRow && lowRow.letters.length === 1 && lowSubperiods.length === 1 && lowSubperiods[0] === activeLetter) {
+          isPoorLowCandidate = false;
+        }
+      }
+      this.poorLow = isPoorLowCandidate;
+
+      // Excess High / Low (Genuine Rejection Tails):
+      // Defined as >= 2 consecutive single-print rows at extreme.
+      // Not formed solely by active developing bracket.
+      // Strictly MUTUALLY EXCLUSIVE with Poor High / Low!
+      if (this.poorHigh) {
+        this.excessHigh = false;
+      } else if (rows.length >= 3 && highRow && highRow.letters.length === 1 && rows[1].letters.length === 1) {
+        const topLetter = highRow.letters[0];
+        if (!this.isDeveloping || topLetter !== activeLetter || this.subperiodOrder.length > 2) {
+          this.excessHigh = true;
+        } else {
+          this.excessHigh = false;
+        }
+      } else {
+        this.excessHigh = false;
+      }
+
+      if (this.poorLow) {
+        this.excessLow = false;
+      } else if (rows.length >= 3 && lowRow && lowRow.letters.length === 1 && rows[rows.length - 2].letters.length === 1) {
+        const botLetter = lowRow.letters[0];
+        if (!this.isDeveloping || botLetter !== activeLetter || this.subperiodOrder.length > 2) {
+          this.excessLow = true;
+        } else {
+          this.excessLow = false;
+        }
+      } else {
+        this.excessLow = false;
       }
     }
 
-    // 5. Descriptive Profile Structure Classification (Shape)
+    // 7. Descriptive Profile Structure Classification (Shape)
     this._classifyProfileShape(rows);
   }
 
@@ -350,35 +563,47 @@ export class TPOEngine {
     this.bracketMinutes = options.bracketMinutes || 30;
     this.valueAreaPercent = options.valueAreaPercent || 0.70;
     this.ibPeriods = options.ibPeriods || 2;
+    this.sessionMode = options.sessionMode || 'INSTITUTIONAL'; // 'INSTITUTIONAL' | 'DAILY'
+    this.priceIncrement = options.priceIncrement || null;
+    this.ticksPerBlock = options.ticksPerBlock || 1;
   }
 
   setOptions(options = {}) {
-    if (options.bracketMinutes) this.bracketMinutes = options.bracketMinutes;
-    if (options.valueAreaPercent) this.valueAreaPercent = options.valueAreaPercent;
-    if (options.ibPeriods) this.ibPeriods = options.ibPeriods;
+    if (options.bracketMinutes !== undefined) this.bracketMinutes = options.bracketMinutes;
+    if (options.valueAreaPercent !== undefined) this.valueAreaPercent = options.valueAreaPercent;
+    if (options.ibPeriods !== undefined) this.ibPeriods = options.ibPeriods;
+    if (options.sessionMode !== undefined) this.sessionMode = options.sessionMode;
+    if (options.priceIncrement !== undefined) this.priceIncrement = options.priceIncrement;
+    if (options.ticksPerBlock !== undefined) this.ticksPerBlock = options.ticksPerBlock;
   }
 
   setTimeframe(timeframeStr) {
     this.timeframeStr = timeframeStr;
   }
 
+  getInstrumentBaseTick(symbol) {
+    const s = (symbol || '').toUpperCase();
+    if (s.includes('BTC')) return 5.0;
+    if (s.includes('ETH')) return 0.5;
+    if (s.includes('XAU') || s.includes('GOLD')) return 0.2;
+    if (s.includes('JPY')) return 0.005;
+    return 0.00005; // 0.5 pip for pristine Forex ladders
+  }
+
   processCandles(candles, symbol = 'EUR/USD', timeframeStr = null) {
     this.symbol = symbol;
     if (timeframeStr) this.timeframeStr = timeframeStr;
-    const currentTf = (this.timeframeStr || '1m').toLowerCase();
     this.sessions = [];
     if (!candles || candles.length === 0) return this.sessions;
 
     const sorted = [...candles].sort((a, b) => a.startTime - b.startTime);
-
     const sessionMap = new Map();
 
-    if (currentTf === '1m') {
-      // FIX #2: Institutional Market Sessions for 1m timeframe:
-      // Asia: 00:00 - 08:00 UTC
-      // London: 08:00 - 16:00 UTC
-      // New York: 16:00 - 24:00 UTC
-      // Provides 3 well-balanced, sculpted ~8-hour auction sessions per day on 1m
+    const mode = this.sessionMode || 'INSTITUTIONAL';
+
+    if (mode === 'INSTITUTIONAL') {
+      // Institutional Market Sessions (Asia, London, New York)
+      // Preserved consistently regardless of whether the chart is viewed on 1m, 5m, 15m, 1h
       sorted.forEach(c => {
         const d = new Date(c.startTime);
         const y = d.getUTCFullYear();
@@ -413,7 +638,6 @@ export class TPOEngine {
         sessionData.candles.push(c);
       });
     } else {
-      // PRESERVE EXISTING BEHAVIOR EXACTLY for all other timeframes (5m, 15m, 30m, 1h, 4h, D)
       // Group candles into Daily Sessions (00:00:00 UTC)
       sorted.forEach(c => {
         const d = new Date(c.startTime);
@@ -436,30 +660,12 @@ export class TPOEngine {
     const sessionList = [];
     const keys = Array.from(sessionMap.keys());
 
+    // Fixed analytical calculation increment (decoupled from display resolution)
+    const baseTick = this.getInstrumentBaseTick(symbol);
+    const tickSize = this.priceIncrement || (baseTick * (this.ticksPerBlock || 1));
+
     keys.forEach((key, keyIdx) => {
       const { sessionKey, sessionStartMs, candles: sCandles } = sessionMap.get(key);
-
-      let sHigh = -Infinity;
-      let sLow = Infinity;
-      sCandles.forEach(c => {
-        if (c.high > sHigh) sHigh = c.high;
-        if (c.low < sLow) sLow = c.low;
-      });
-
-      // Adaptive tick size scaled for clean TPO profiles (25-35 classical Market Profile price rows)
-      let baseTick = 0.00005; // 0.5 pip for Forex
-      const s = (symbol || '').toUpperCase();
-      const midPrice = (sHigh + sLow) / 2;
-      if (s.includes('BTC') || midPrice > 10000) baseTick = 5.0;
-      else if (s.includes('ETH') || midPrice > 1000) baseTick = 0.5;
-      else if (s.includes('XAU') || s.includes('GOLD') || midPrice > 500) baseTick = 0.2;
-      else if (s.includes('JPY')) baseTick = 0.005;
-
-      const sessionRange = Math.max(sHigh - sLow, baseTick * 10);
-      const targetRows = 30;
-      const rawStep = sessionRange / targetRows;
-      const stepMult = Math.max(1, Math.round(rawStep / baseTick));
-      const tickSize = baseTick * stepMult;
 
       const session = new TPOSession(sessionKey, symbol, tickSize, {
         bracketMinutes: this.bracketMinutes,
@@ -475,7 +681,9 @@ export class TPOEngine {
       sCandles.forEach(c => {
         session.addCandle(c, sessionStartMs);
       });
-      session.finalizeAuctionLevels();
+
+      const prevSession = sessionList.length > 0 ? sessionList[sessionList.length - 1] : null;
+      session.finalizeAuctionLevels(prevSession);
       sessionList.push(session);
     });
 

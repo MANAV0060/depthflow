@@ -138,6 +138,12 @@ export class MT5Adapter extends ProviderAdapter {
             return;
           }
 
+          if (data.type === 'tpo_1m_candles' && Array.isArray(data.candles)) {
+            console.log(`[MT5Adapter] Received ${data.candles.length} dedicated 1m TPO candles for ${data.symbol}`);
+            this._emitTpoCandles(data.candles);
+            return;
+          }
+
           if (data.type === 'liquidation_heatmap' && data.data) {
             console.log(`[MT5Adapter] Received liquidation heatmap (${data.data.buckets?.length || 0} pools) for ${data.symbol}`);
             this._emitLiquidationHeatmap(data.data);

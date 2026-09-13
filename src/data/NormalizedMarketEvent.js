@@ -19,6 +19,7 @@ export const DataProvenance = {
   OBSERVED: 'OBSERVED',         // Raw telemetry directly from feed
   INFERRED: 'INFERRED',         // Estimated aggressor or derived metric
   DERIVED: 'DERIVED',           // Mathematical profile calculation
+  NEUTRAL: 'NEUTRAL',           // Neutral volume preservation (indeterminate aggressor)
   PROXY: 'PROXY',               // CME Futures proxy data for Spot FX
   SIMULATED: 'SIMULATED'        // Synthetic test telemetry
 };

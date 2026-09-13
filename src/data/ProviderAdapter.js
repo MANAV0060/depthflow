@@ -69,6 +69,12 @@ export class ProviderAdapter {
     return () => this.historyListeners.delete(callback);
   }
 
+  onTpoCandles(callback) {
+    if (!this.tpoCandleListeners) this.tpoCandleListeners = new Set();
+    this.tpoCandleListeners.add(callback);
+    return () => this.tpoCandleListeners.delete(callback);
+  }
+
   onLiquidationHeatmap(callback) {
     if (!this.heatmapListeners) this.heatmapListeners = new Set();
     this.heatmapListeners.add(callback);
@@ -126,6 +132,17 @@ export class ProviderAdapter {
         listener(candles);
       } catch (err) {
         console.error(`[${this.name}] Historical chunk listener error:`, err);
+      }
+    }
+  }
+
+  _emitTpoCandles(candles) {
+    if (!this.tpoCandleListeners) return;
+    for (const listener of this.tpoCandleListeners) {
+      try {
+        listener(candles);
+      } catch (err) {
+        console.error(`[${this.name}] TPO candle listener error:`, err);
       }
     }
   }

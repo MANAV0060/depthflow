@@ -14,6 +14,8 @@ export class AdaptiveClassifier {
   classify(event) {
     // Tier 1: Direct Exchange Aggressor Flag
     if (event.aggressor === AggressorSide.BUY || event.aggressor === AggressorSide.SELL) {
+      if (event.price) this.lastPriceMap.set(event.symbol, event.price);
+      this.lastAggressorMap.set(event.symbol, event.aggressor);
       return {
         aggressor: event.aggressor,
         provenance: DataProvenance.OBSERVED,
@@ -22,14 +24,17 @@ export class AdaptiveClassifier {
     }
 
     const { price, bid, ask, symbol } = event;
-    const prevPrice = this.lastPriceMap.get(symbol) || price;
-    const prevAggressor = this.lastAggressorMap.get(symbol) || AggressorSide.INFERRED_BUY;
+    const hasPrevPrice = this.lastPriceMap.has(symbol);
+    const prevPrice = hasPrevPrice ? this.lastPriceMap.get(symbol) : price;
+    const prevAggressor = this.lastAggressorMap.get(symbol);
 
     let classifiedSide = AggressorSide.UNKNOWN;
     let method = 'UNKNOWN';
 
     // Tier 2: Trade-at-Bid/Ask (Quote Test)
-    if (bid > 0 && ask > 0) {
+    // Conclusive when trade prints at or outside current spread
+    const hasValidQuotes = typeof bid === 'number' && typeof ask === 'number' && bid > 0 && ask > 0 && ask >= bid;
+    if (hasValidQuotes) {
       if (price >= ask) {
         classifiedSide = AggressorSide.INFERRED_BUY;
         method = 'QUOTE_TEST_ASK';
@@ -37,7 +42,7 @@ export class AdaptiveClassifier {
         classifiedSide = AggressorSide.INFERRED_SELL;
         method = 'QUOTE_TEST_BID';
       } else {
-        // Tier 3: Lee-Ready Mid-Spread Test
+        // Tier 3: Lee-Ready Mid-Spread Test (Trade inside the spread)
         const midPrice = (bid + ask) / 2;
         if (price > midPrice) {
           classifiedSide = AggressorSide.INFERRED_BUY;
@@ -49,27 +54,34 @@ export class AdaptiveClassifier {
       }
     }
 
-    // Tier 4: Tick Direction Rule (Fallback when mid-price is identical)
+    // Tier 4: Tick Direction Rule (Fallback when trade is exactly at mid-price or quotes are missing)
     if (classifiedSide === AggressorSide.UNKNOWN) {
-      if (price > prevPrice) {
+      if (hasPrevPrice && price > prevPrice) {
         classifiedSide = AggressorSide.INFERRED_BUY;
         method = 'TICK_RULE_UP';
-      } else if (price < prevPrice) {
+      } else if (hasPrevPrice && price < prevPrice) {
         classifiedSide = AggressorSide.INFERRED_SELL;
         method = 'TICK_RULE_DOWN';
-      } else {
-        classifiedSide = prevAggressor; // Maintain previous direction
+      } else if (hasPrevPrice && price === prevPrice && prevAggressor && prevAggressor !== AggressorSide.UNKNOWN) {
+        // Zero-tick rule: price unchanged from previous trade, retain previous known aggressor
+        classifiedSide = prevAggressor;
         method = 'TICK_RULE_ZERO';
+      } else {
+        // Cold start with no price movement and no conclusive quotes
+        classifiedSide = AggressorSide.UNKNOWN;
+        method = 'INDETERMINATE';
       }
     }
 
     // Update state
     this.lastPriceMap.set(symbol, price);
-    this.lastAggressorMap.set(symbol, classifiedSide);
+    if (classifiedSide !== AggressorSide.UNKNOWN) {
+      this.lastAggressorMap.set(symbol, classifiedSide);
+    }
 
     return {
       aggressor: classifiedSide,
-      provenance: DataProvenance.INFERRED,
+      provenance: classifiedSide === AggressorSide.UNKNOWN ? DataProvenance.NEUTRAL : DataProvenance.INFERRED,
       method
     };
   }

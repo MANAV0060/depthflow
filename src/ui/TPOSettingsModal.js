@@ -43,7 +43,10 @@ export class TPOSettingsModal {
       showHoverTooltip: false,
       showSinglePrints: true,
       showPoorExtremes: true,
-      bracketMinutes: 30
+      bracketMinutes: 30,
+      sessionMode: 'INSTITUTIONAL', // 'INSTITUTIONAL' | 'DAILY'
+      ticksPerBlock: 1,
+      showVolVa: true
     };
 
     try {

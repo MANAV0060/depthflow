@@ -312,6 +312,14 @@ export class FootprintRenderer {
       ctx.strokeRect(leftX, topBody, candleWidth, bodyH);
     }
 
+    // Ensure analytical imbalances are computed
+    if (typeof candle.computeImbalances === 'function') {
+      if (!candle.stackedBuyImbalances || candle._lastImbalanceRatio !== imbalanceRatio) {
+        candle.computeImbalances(imbalanceRatio);
+        candle._lastImbalanceRatio = imbalanceRatio;
+      }
+    }
+
     // 3. Render Price Ladder Rows
     const fontPx = Math.min(10, Math.max(8, Math.floor(rowHeight * 0.55)));
     ctx.font = `600 ${fontPx}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace`;
@@ -326,21 +334,9 @@ export class FootprintRenderer {
       totalSellVol += cell.sellVolume;
       totalBuyVol += cell.buyVolume;
 
-      // Diagonal Imbalances (>= 300%)
-      let hasBuyImbalance = false;
-      let hasSellImbalance = false;
-      if (idx < sortedCells.length - 1) {
-        const lowerCell = sortedCells[idx + 1];
-        if (lowerCell.sellVolume > 0 && cell.buyVolume / lowerCell.sellVolume >= imbalanceRatio) {
-          hasBuyImbalance = true;
-        }
-      }
-      if (idx > 0) {
-        const upperCell = sortedCells[idx - 1];
-        if (upperCell.buyVolume > 0 && cell.sellVolume / upperCell.buyVolume >= imbalanceRatio) {
-          hasSellImbalance = true;
-        }
-      }
+      // Analytical Diagonal Imbalances from engine
+      const hasBuyImbalance = Boolean(cell.hasBuyImbalance);
+      const hasSellImbalance = Boolean(cell.hasSellImbalance);
 
       if (this.style === 'DELTA') {
         // --- DELTA PROFILE MODE ---
@@ -429,7 +425,42 @@ export class FootprintRenderer {
     ctx.lineTo(x, topY + totalLadderHeight);
     ctx.stroke();
 
-    // 5. Container Outline
+    // 5. Stacked Imbalances Visual Zones
+    if (candle.stackedBuyImbalances && candle.stackedBuyImbalances.length > 0) {
+      candle.stackedBuyImbalances.forEach(stack => {
+        const topCellIdx = sortedCells.findIndex(c => c.price === stack.startPrice);
+        const botCellIdx = sortedCells.findIndex(c => c.price === stack.endPrice);
+        if (topCellIdx !== -1 && botCellIdx !== -1) {
+          const minY = topY + Math.min(topCellIdx, botCellIdx) * rowHeight;
+          const maxY = topY + (Math.max(topCellIdx, botCellIdx) + 1) * rowHeight;
+          const stackH = maxY - minY;
+          ctx.fillStyle = 'rgba(0, 229, 255, 0.28)';
+          ctx.fillRect(leftX + candleWidth - 3, minY, 3, stackH);
+          ctx.strokeStyle = '#00e5ff';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(leftX + candleWidth - 3, minY, 3, stackH);
+        }
+      });
+    }
+
+    if (candle.stackedSellImbalances && candle.stackedSellImbalances.length > 0) {
+      candle.stackedSellImbalances.forEach(stack => {
+        const topCellIdx = sortedCells.findIndex(c => c.price === stack.startPrice);
+        const botCellIdx = sortedCells.findIndex(c => c.price === stack.endPrice);
+        if (topCellIdx !== -1 && botCellIdx !== -1) {
+          const minY = topY + Math.min(topCellIdx, botCellIdx) * rowHeight;
+          const maxY = topY + (Math.max(topCellIdx, botCellIdx) + 1) * rowHeight;
+          const stackH = maxY - minY;
+          ctx.fillStyle = 'rgba(255, 51, 85, 0.28)';
+          ctx.fillRect(leftX, minY, 3, stackH);
+          ctx.strokeStyle = '#ff3355';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(leftX, minY, 3, stackH);
+        }
+      });
+    }
+
+    // 6. Container Outline
     ctx.strokeStyle = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)';
     ctx.lineWidth = 1;
     ctx.strokeRect(leftX, topY, candleWidth, totalLadderHeight);

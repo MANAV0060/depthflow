@@ -18,6 +18,7 @@ export class ProviderRegistry {
     this.historyListeners = new Set();
     this.heatmapListeners = new Set();
     this.sweepListeners = new Set();
+    this.tpoCandleListeners = new Set();
     this.statusListeners = new Set();
     this.activeUnsubscribe = null;
 
@@ -82,6 +83,12 @@ export class ProviderRegistry {
       });
     }
 
+    if (nextProvider.onTpoCandles) {
+      nextProvider.onTpoCandles((candles) => {
+        this._notifyTpoCandles(candles);
+      });
+    }
+
     if (nextProvider.onLiquidationHeatmap) {
       nextProvider.onLiquidationHeatmap((data) => {
         this._notifyHeatmap(data);
@@ -116,6 +123,11 @@ export class ProviderRegistry {
   onHistoricalChunk(callback) {
     this.historyListeners.add(callback);
     return () => this.historyListeners.delete(callback);
+  }
+
+  onTpoCandles(callback) {
+    this.tpoCandleListeners.add(callback);
+    return () => this.tpoCandleListeners.delete(callback);
   }
 
   onLiquidationHeatmap(callback) {
@@ -180,6 +192,16 @@ export class ProviderRegistry {
         listener(candles);
       } catch (err) {
         console.error('[ProviderRegistry] Candle listener error:', err);
+      }
+    }
+  }
+
+  _notifyTpoCandles(candles) {
+    for (const listener of this.tpoCandleListeners) {
+      try {
+        listener(candles);
+      } catch (err) {
+        console.error('[ProviderRegistry] TPO candle listener error:', err);
       }
     }
   }

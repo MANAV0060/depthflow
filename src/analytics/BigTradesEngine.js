@@ -17,11 +17,13 @@ export const DetectionMethod = {
 };
 
 export const BigTradeEventType = {
-  LARGE_BUY: 'LARGE_BUY',               // Exceptional aggressive buyer execution
-  LARGE_SELL: 'LARGE_SELL',             // Exceptional aggressive seller execution
-  SWEEP_BURST: 'SWEEP_BURST',           // Multi-tick consecutive price level sweep
-  ABSORPTION: 'ABSORPTION',             // Extreme volume absorbed with zero follow-through
-  LARGE_ACTIVITY: 'LARGE_ACTIVITY'      // High tick/broker volume burst (size unobservable directly)
+  OBSERVED_LARGE_TRADE: 'OBSERVED_LARGE_TRADE', // Genuine individual large trade execution from feed
+  BAR_VOLUME_NODE: 'BAR_VOLUME_NODE',           // High volume price level concentration across bar
+  LARGE_BUY: 'LARGE_BUY',                       // Exceptional aggressive buyer execution
+  LARGE_SELL: 'LARGE_SELL',                     // Exceptional aggressive seller execution
+  SWEEP_BURST: 'SWEEP_BURST',                   // Multi-tick consecutive price level sweep
+  ABSORPTION: 'ABSORPTION',                     // Extreme volume absorbed with zero follow-through
+  LARGE_ACTIVITY: 'LARGE_ACTIVITY'              // High tick/broker volume burst
 };
 
 /**
@@ -60,11 +62,17 @@ export class BigTradesEngine {
 
     this._recomputeTimeframeThresholds();
 
-    // Cache of recent node volumes for rolling baseline calculations (trailing 300 nodes)
+    // Cache of recent bar cell node volumes for rolling baseline calculations (trailing 300 nodes)
     this.volumeHistory = [];
     this.maxHistorySize = 300;
 
-    // Persistent registry of detected events for historical display and research analysis
+    // Cache of recent live individual tick sizes
+    this.liveTickHistory = [];
+
+    // Separate registries:
+    // 1. Live observed trade events (individual tape prints)
+    this.liveTrades = [];
+    // 2. Bar volume node anomalies (aggregated price cell concentrations)
     this.detectedEvents = [];
     this.maxEventsRetained = 500;
   }
@@ -82,7 +90,7 @@ export class BigTradesEngine {
     this.effectiveMinVolumeFloor = this.baseMinVolumeFloor * profile.minFloorMultiplier;
     this.effectiveFixedThreshold = this.baseFixedThreshold * profile.minFloorMultiplier;
 
-    // Rolling percentile: higher timeframes require stricter outlier percentiles (e.g. 98% -> 99.4%)
+    // Rolling percentile: higher timeframes require stricter outlier percentiles
     const slack = 1 - this.basePercentileThreshold;
     this.effectivePercentileThreshold = Math.max(0.90, Math.min(0.998, 1 - (slack / profile.multiplierScale)));
   }
@@ -101,13 +109,70 @@ export class BigTradesEngine {
 
   clear() {
     this.volumeHistory = [];
+    this.liveTickHistory = [];
+    this.liveTrades = [];
     this.detectedEvents = [];
   }
 
   /**
-   * Evaluates all price cells in a list of candles to detect regime-relative Big Trades.
+   * Evaluates an individual live market tick in real time to detect genuine large executions.
+   * @param {Object} event 
+   * @param {Object} aggressorResult 
+   * @returns {Object|null} Detected live trade event or null
+   */
+  processLiveTick(event, aggressorResult) {
+    if (!event || !event.price || !event.size) return null;
+
+    const size = Number(event.size);
+    if (size <= 0) return null;
+
+    // Ingest into rolling live tick history
+    this.liveTickHistory.push(size);
+    if (this.liveTickHistory.length > this.maxHistorySize) {
+      this.liveTickHistory.shift();
+    }
+
+    const liveThreshold = this._calculateThreshold(this.liveTickHistory);
+    if (size >= liveThreshold && size >= this.effectiveMinVolumeFloor) {
+      const isBuy = aggressorResult.aggressor === AggressorSide.BUY || aggressorResult.aggressor === AggressorSide.INFERRED_BUY;
+      const time = Math.floor((event.timestamp || Date.now()) / 1000);
+
+      const liveEvent = {
+        time,
+        timestamp: event.timestamp || Date.now(),
+        price: event.price,
+        volume: size,
+        buyVolume: isBuy ? size : 0,
+        sellVolume: isBuy ? 0 : size,
+        side: isBuy ? 'BUY' : 'SELL',
+        aggressor: aggressorResult.aggressor,
+        eventType: BigTradeEventType.OBSERVED_LARGE_TRADE,
+        type: 'OBSERVED_LARGE_TRADE',
+        provenance: 'OBSERVED_FEED_EVENT',
+        fidelitySource: 'Live Observed Feed Print',
+        fidelityLabel: isBuy ? 'Live Large Buy Trade' : 'Live Large Sell Trade',
+        timeframe: this.timeframeStr,
+        threshold: Math.round(liveThreshold),
+        formattedVol: this._formatVol(size),
+        radius: this._calcRadius(size, liveThreshold)
+      };
+
+      this.liveTrades.push(liveEvent);
+      if (this.liveTrades.length > this.maxEventsRetained) {
+        this.liveTrades.shift();
+      }
+
+      return liveEvent;
+    }
+
+    return null;
+  }
+
+  /**
+   * Evaluates all price cells in a list of candles to detect bar-level volume concentrations.
+   * Does NOT invent synthetic individual trades from historical cells.
    * @param {Array<FootprintCandle>} candles 
-   * @returns {Array<Object>} List of verified Big Trade event objects
+   * @returns {Array<Object>} List of verified volume node objects
    */
   processCandles(candles) {
     if (!candles || candles.length === 0) return [];
@@ -129,7 +194,7 @@ export class BigTradesEngine {
     const threshold = this._calculateThreshold(this.volumeHistory);
     const results = [];
 
-    // 2. Scan candles and identify candidate volume nodes
+    // 2. Scan candles and identify candidate volume concentrations
     candles.forEach(candle => {
       const candleEvents = this._scanCandle(candle, threshold);
       candle.bigTrades = candleEvents;
@@ -145,7 +210,7 @@ export class BigTradesEngine {
   /**
    * Evaluates a single updated or newly completed candle in real time.
    * @param {FootprintCandle} candle 
-   * @returns {Array<Object>} Big trades in this candle
+   * @returns {Array<Object>} Big trades & volume nodes in this candle
    */
   processCandle(candle) {
     if (!candle) return [];
@@ -163,17 +228,24 @@ export class BigTradesEngine {
     });
 
     const threshold = this._calculateThreshold(this.volumeHistory);
-    const newEvents = this._scanCandle(candle, threshold);
-    candle.bigTrades = newEvents;
+    const nodeEvents = this._scanCandle(candle, threshold);
 
-    // Update detectedEvents (replace any previous events from this same candle timestamp)
-    this.detectedEvents = this.detectedEvents.filter(e => e.time !== Math.floor(candle.startTime / 1000));
-    this.detectedEvents.push(...newEvents);
+    // Merge live observed trade events occurring during this candle's period
+    const candleStartSec = Math.floor(candle.startTime / 1000);
+    const candleEndSec = Math.floor((candle.endTime || candle.startTime + this.timeframeMs) / 1000);
+    const matchingLive = this.liveTrades.filter(t => t.time >= candleStartSec && t.time < candleEndSec);
+
+    const combined = [...matchingLive, ...nodeEvents];
+    candle.bigTrades = combined;
+
+    // Update detectedEvents (replace previous events from this candle timestamp)
+    this.detectedEvents = this.detectedEvents.filter(e => e.time !== candleStartSec);
+    this.detectedEvents.push(...combined);
     if (this.detectedEvents.length > this.maxEventsRetained) {
       this.detectedEvents = this.detectedEvents.slice(-this.maxEventsRetained);
     }
 
-    return newEvents;
+    return combined;
   }
 
   getDetectedEvents() {
@@ -181,7 +253,7 @@ export class BigTradesEngine {
   }
 
   /**
-   * Scans a candle's price cells and clusters adjacent sweep events naturally.
+   * Scans a candle's price cells and clusters adjacent volume concentrations.
    */
   _scanCandle(candle, threshold) {
     const cells = this._extractCells(candle);
@@ -189,6 +261,7 @@ export class BigTradesEngine {
 
     const time = Math.floor(candle.startTime / 1000);
     const candidates = [];
+    const isReconstructed = candle.fidelityMode === 'RECONSTRUCTED_HISTORICAL_BARS' || candle.provenance === 'RECONSTRUCTED_HISTORICAL_FOOTPRINT';
 
     // Sort cells by price ascending
     cells.sort((a, b) => a.price - b.price);
@@ -207,7 +280,6 @@ export class BigTradesEngine {
         const aggressor = isBuyerDominant ? AggressorSide.BUY : AggressorSide.SELL;
         const ratio = sellVol > 0 ? (buyVol / sellVol) : buyVol;
 
-        // Check for Absorption signature (extreme buy volume at high of bar without close above, or vice-versa)
         let eventType = isBuyerDominant ? BigTradeEventType.LARGE_BUY : BigTradeEventType.LARGE_SELL;
         if (isBuyerDominant && cell.price >= candle.high && candle.close < candle.high) {
           eventType = BigTradeEventType.ABSORPTION;
@@ -228,6 +300,8 @@ export class BigTradesEngine {
           aggressor,
           ratio,
           eventType,
+          type: 'BAR_VOLUME_NODE',
+          provenance: isReconstructed ? 'RECONSTRUCTED_HISTORICAL_FOOTPRINT' : 'BAR_AGGREGATED_VOLUME',
           candleOpen: candle.open,
           candleHigh: candle.high,
           candleLow: candle.low,
@@ -238,12 +312,7 @@ export class BigTradesEngine {
 
     if (candidates.length === 0) return [];
 
-    // 3. Natural Spatial Burst Clustering:
-    // If adjacent price ticks in the same candle share the same aggressor side,
-    // they represent a single aggressive sweep burst. Cluster them to prevent visual overlap.
     const clusters = this._clusterSweeps(candidates);
-
-    // 4. Compute visual metrics (radius, label, honest fidelity text)
     return clusters.map(c => this._enrichEvent(c, threshold));
   }
 
@@ -310,29 +379,33 @@ export class BigTradesEngine {
     };
   }
 
+  _calcRadius(vol, threshold) {
+    const minR = 9;
+    const maxR = 34;
+    const excess = Math.max(0, vol - threshold);
+    const scaleFactor = Math.min(1.0, Math.sqrt(excess / (threshold * 3.5 || 1)));
+    return Math.round(minR + (maxR - minR) * scaleFactor);
+  }
+
   /**
    * Enriches the event with visual properties and transparent fidelity labels.
    */
   _enrichEvent(event, threshold) {
-    // Dynamic bubble radius: square-root scaling between 9px and 34px
-    const minR = 9;
-    const maxR = 34;
-    const excess = Math.max(0, event.volume - threshold);
-    const scaleFactor = Math.min(1.0, Math.sqrt(excess / (threshold * 3.5 || 1)));
-    const radius = Math.round(minR + (maxR - minR) * scaleFactor);
+    const radius = this._calcRadius(event.volume, threshold);
 
     // Transparent, non-fabricated fidelity description
-    let fidelitySource = 'Broker Volume Event';
-    let fidelityLabel = 'Large Activity (Estimated)';
-    if (this.fidelityMode === VolumeFidelity.EXCHANGE_VOLUME) {
+    let fidelitySource = 'Bar Aggregated Volume';
+    let fidelityLabel = 'Volume Node (Concentration)';
+
+    if (event.provenance === 'RECONSTRUCTED_HISTORICAL_FOOTPRINT') {
+      fidelitySource = 'Reconstructed Historical Footprint';
+      fidelityLabel = 'Historical Volume Node (Reconstructed)';
+    } else if (event.provenance === 'OBSERVED_FEED_EVENT') {
+      fidelitySource = 'Observed Broker Feed';
+      fidelityLabel = event.side === 'BUY' ? 'Live Large Buy Trade' : 'Live Large Sell Trade';
+    } else if (this.fidelityMode === VolumeFidelity.EXCHANGE_VOLUME) {
       fidelitySource = 'Exchange Execution';
       fidelityLabel = event.side === 'BUY' ? 'Large Buy Trade' : 'Large Sell Trade';
-    } else if (this.fidelityMode === VolumeFidelity.BROKER_VOLUME) {
-      fidelitySource = 'MT5 Real-Time Broker Volume';
-      fidelityLabel = event.side === 'BUY' ? 'Large Buy Activity' : 'Large Sell Activity';
-    } else {
-      fidelitySource = 'Tick Frequency Activity';
-      fidelityLabel = 'High Volume Burst';
     }
 
     const tfProfile = TimeframeProfiles[this.timeframeStr] || TimeframeProfiles['1m'];
@@ -345,6 +418,8 @@ export class BigTradesEngine {
       sellVolume: event.sellVolume,
       side: event.side,
       eventType: event.eventType,
+      type: event.type || 'BAR_VOLUME_NODE',
+      provenance: event.provenance || 'BAR_AGGREGATED_VOLUME',
       radius,
       fidelitySource,
       fidelityLabel,
@@ -380,11 +455,21 @@ export class BigTradesEngine {
     const sorted = [...history].sort((a, b) => a - b);
     const median = this._median(sorted);
     const absoluteDeviations = sorted.map(v => Math.abs(v - median)).sort((a, b) => a - b);
-    const mad = this._median(absoluteDeviations) || (median * 0.25);
+    const mad = this._median(absoluteDeviations);
 
-    // Normal consistency constant 1.4826 converts MAD to robust standard deviation estimate
-    const robustSigma = 1.4826 * mad;
-    const candidate = median + this.effectiveMadMultiplier * robustSigma;
+    let candidate;
+    if (mad > 0) {
+      // Normal consistency constant 1.4826 converts MAD to robust standard deviation estimate
+      const robustSigma = 1.4826 * mad;
+      candidate = median + this.effectiveMadMultiplier * robustSigma;
+    } else {
+      // If MAD is 0 (homogenous values), fallback gracefully to Standard Deviation or mean multiplier
+      const mean = history.reduce((acc, v) => acc + v, 0) / history.length;
+      const variance = history.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / history.length;
+      const stdDev = Math.sqrt(variance);
+      candidate = stdDev > 0 ? (mean + this.effectiveStdDevMultiplier * stdDev) : (median * 1.5);
+    }
+
     return Math.max(this.effectiveMinVolumeFloor, candidate);
   }
 

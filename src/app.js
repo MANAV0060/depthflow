@@ -4,18 +4,18 @@
  */
 
 import { ProviderRegistry } from './data/ProviderRegistry.js';
-import { ChartEngine } from './chart/ChartEngine.js?v=tpo_live_v4';
-import { VolumeProfileEngine } from './analytics/VolumeProfileEngine.js?v=tpo_live_v4';
-import { VolumeProfileRenderer } from './chart/VolumeProfileRenderer.js?v=tv1';
-import { DeltaEngine } from './analytics/DeltaEngine.js?v=tpo_live_v4';
-import { AdaptiveClassifier } from './analytics/AdaptiveClassifier.js?v=tpo_live_v4';
-import { FootprintAggregator } from './analytics/FootprintAggregator.js?v=tpo_live_v4';
-import { PatternDetector } from './analytics/PatternDetector.js?v=tpo_live_v4';
-import { BigTradesEngine, DetectionMethod, BigTradeEventType } from './analytics/BigTradesEngine.js?v=tpo_live_v4';
-import { TPOEngine } from './analytics/TPOEngine.js?v=tpo_live_v4';
-import { ReplayEngine } from './data/ReplayEngine.js?v=tpo_live_v4';
-import { DiagnosticsDrawer } from './ui/DiagnosticsDrawer.js?v=tpo_live_v4';
-import { TPOSettingsModal } from './ui/TPOSettingsModal.js?v=tpo_live_v4';
+import { ChartEngine } from './chart/ChartEngine.js?v=orderflow_v5';
+import { VolumeProfileEngine } from './analytics/VolumeProfileEngine.js?v=orderflow_v5';
+import { VolumeProfileRenderer } from './chart/VolumeProfileRenderer.js?v=orderflow_v5';
+import { DeltaEngine } from './analytics/DeltaEngine.js?v=orderflow_v5';
+import { AdaptiveClassifier } from './analytics/AdaptiveClassifier.js?v=orderflow_v5';
+import { FootprintAggregator } from './analytics/FootprintAggregator.js?v=orderflow_v5';
+import { PatternDetector } from './analytics/PatternDetector.js?v=orderflow_v5';
+import { BigTradesEngine, DetectionMethod, BigTradeEventType } from './analytics/BigTradesEngine.js?v=orderflow_v5';
+import { TPOEngine } from './analytics/TPOEngine.js?v=orderflow_v5';
+import { ReplayEngine } from './data/ReplayEngine.js?v=orderflow_v5';
+import { DiagnosticsDrawer } from './ui/DiagnosticsDrawer.js?v=orderflow_v5';
+import { TPOSettingsModal } from './ui/TPOSettingsModal.js?v=orderflow_v5';
 import { defaultConfig } from './analytics/OrderFlowConfig.js';
 
 class DepthflowApp {
@@ -50,6 +50,7 @@ class DepthflowApp {
     this.patternDetector = new PatternDetector(defaultConfig);
     this.replayEngine = null;
     this.diagnosticsDrawer = new DiagnosticsDrawer();
+    this.raw1mCandles = [];
 
     this._initUI();
   }
@@ -81,9 +82,11 @@ class DepthflowApp {
           this.tpoEngine.setOptions({
             bracketMinutes: settings.bracketMinutes,
             valueAreaPercent: settings.valueAreaPercent,
-            ibPeriods: settings.ibDuration === 30 ? 1 : 2
+            ibPeriods: settings.ibDuration === 30 ? 1 : 2,
+            sessionMode: settings.sessionMode || 'INSTITUTIONAL',
+            ticksPerBlock: settings.ticksPerBlock || 1
           });
-          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol, this.currentTimeframeStr);
+          const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
           if (this.chartEngine) {
             this.chartEngine.setTpoSessions(sessions);
           }
@@ -99,7 +102,9 @@ class DepthflowApp {
     this.tpoEngine.setOptions({
       bracketMinutes: initialTpoSettings.bracketMinutes,
       valueAreaPercent: initialTpoSettings.valueAreaPercent,
-      ibPeriods: initialTpoSettings.ibDuration === 30 ? 1 : 2
+      ibPeriods: initialTpoSettings.ibDuration === 30 ? 1 : 2,
+      sessionMode: initialTpoSettings.sessionMode || 'INSTITUTIONAL',
+      ticksPerBlock: initialTpoSettings.ticksPerBlock || 1
     });
     this.chartEngine.setTpoOptions(initialTpoSettings);
 
@@ -110,6 +115,7 @@ class DepthflowApp {
     this.registry.onEvent((event) => this._processMarketEvent(event));
     this.registry.onCandles((candles) => this._processInitialCandles(candles));
     this.registry.onHistoricalChunk((candles) => this._processHistoricalChunk(candles));
+    this.registry.onTpoCandles((candles) => this._handleTpo1mCandles(candles));
     this.registry.onLiquidationHeatmap((data) => {
       if (this.chartEngine) this.chartEngine.setLiquidationData(data);
     });
@@ -214,7 +220,7 @@ class DepthflowApp {
       }
       if (this.chartEngine) {
         if (mode === 'TPO' && this.tpoEngine) {
-          const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol, this.currentTimeframeStr);
+          const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
           this.chartEngine.setTpoSessions(sessions);
         }
         this.chartEngine.setChartMode(mode);
@@ -499,6 +505,7 @@ class DepthflowApp {
     if (legSym) legSym.textContent = sym;
 
     console.log(`[OdeerflowApp] Switched active symbol to: ${sym}`);
+    this.raw1mCandles = [];
     this._resetAnalytics();
 
     if (this.chartEngine) {
@@ -538,6 +545,28 @@ class DepthflowApp {
     this.registry.setTimeframe(timeframeStr);
   }
 
+  _getTpoCandles() {
+    if (this.raw1mCandles && this.raw1mCandles.length >= 10) {
+      return this.raw1mCandles;
+    }
+    return this.aggregator.getAllCandles();
+  }
+
+  _handleTpo1mCandles(candles) {
+    if (!Array.isArray(candles) || candles.length === 0) return;
+    if (candles[0].symbol && !this._isSymbolMatch(candles[0].symbol, this.currentSymbol)) {
+      return;
+    }
+    console.log(`[OdeerflowApp] Received ${candles.length} dedicated 1m TPO baseline candles for ${this.currentSymbol}`);
+    this.raw1mCandles = [...candles].sort((a, b) => a.startTime - b.startTime);
+    if (this.tpoEngine) {
+      const sessions = this.tpoEngine.processCandles(this.raw1mCandles, this.currentSymbol, this.currentTimeframeStr);
+      if (this.chartEngine) {
+        this.chartEngine.setTpoSessions(sessions);
+      }
+    }
+  }
+
   _processInitialCandles(candles) {
     if (!Array.isArray(candles) || candles.length === 0) return;
     if (candles[0].symbol && !this._isSymbolMatch(candles[0].symbol, this.currentSymbol)) {
@@ -548,6 +577,11 @@ class DepthflowApp {
     this._resetAnalytics();
     this.aggregator.loadCandles(candles);
     this.profileEngine.loadFromCandles(candles);
+
+    // CRITICAL: Only populate raw1mCandles from display candles if on 1m! Never pollute with HTF bars.
+    if (this.currentTimeframeStr === '1m') {
+      this.raw1mCandles = [...candles];
+    }
 
     const profileData = this.profileEngine.calculateProfile();
     if (this.profileRenderer) {
@@ -564,7 +598,7 @@ class DepthflowApp {
     }
 
     if (this.tpoEngine) {
-      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol, this.currentTimeframeStr);
+      const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
       if (this.chartEngine) {
         this.chartEngine.setTpoSessions(sessions);
       }
@@ -577,12 +611,15 @@ class DepthflowApp {
     }
 
     // Initialize Delta / CVD with the hydrated bars
+    this.deltaEngine.clear();
     let cumulativeCvd = 0;
     allCandles.forEach((c) => {
       const cvdRecord = this.deltaEngine.processCandle(c);
-      cumulativeCvd = cvdRecord.cvd;
-      if (this.chartEngine) {
-        this.chartEngine.updateCvd(c.startTime, cumulativeCvd);
+      if (cvdRecord) {
+        cumulativeCvd = cvdRecord.cvd;
+        if (this.chartEngine) {
+          this.chartEngine.updateCvd(c.startTime, cumulativeCvd);
+        }
       }
     });
 
@@ -604,7 +641,13 @@ class DepthflowApp {
 
     console.log(`[OdeerflowApp] Prepending ${candles.length} historical bars for ${this.currentSymbol}`);
     this.aggregator.prependCandles(candles);
+    if (this.currentTimeframeStr === '1m' && this.raw1mCandles) {
+      this.raw1mCandles = [...candles, ...this.raw1mCandles].sort((a, b) => a.startTime - b.startTime);
+    }
     const allCandles = this.aggregator.getAllCandles();
+    if (this.deltaEngine) {
+      this.deltaEngine.processCandles(allCandles);
+    }
     if (this.bigTradesEngine) {
       this.bigTradesEngine.processCandles(allCandles);
     }
@@ -612,7 +655,7 @@ class DepthflowApp {
       this.chartEngine.prependCandles(allCandles);
     }
     if (this.tpoEngine) {
-      const sessions = this.tpoEngine.processCandles(allCandles, this.currentSymbol, this.currentTimeframeStr);
+      const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
       if (this.chartEngine) {
         this.chartEngine.setTpoSessions(sessions);
       }
@@ -724,7 +767,12 @@ class DepthflowApp {
     }
     this._updateProfileStatsUI(profileData);
 
-    // 3. Footprint Candle Aggregation & TV Rendering
+    // 3. Live Large Trade Execution Detection
+    if (this.bigTradesEngine) {
+      this.bigTradesEngine.processLiveTick(event, aggressorResult);
+    }
+
+    // 4. Footprint Candle Aggregation & TV Rendering
     const activeCandle = this.aggregator.processEvent(event, aggressorResult);
     if (this.bigTradesEngine) {
       this.bigTradesEngine.processCandle(activeCandle);
@@ -735,10 +783,34 @@ class DepthflowApp {
     }
     this._updateLegend(activeCandle);
 
+    // Maintain raw 1m candles for TPO even if chart is on another timeframe
+    if (event.price && this.raw1mCandles) {
+      const m1Time = Math.floor((event.timestamp || Date.now()) / 60000) * 60000;
+      let lastM1 = this.raw1mCandles[this.raw1mCandles.length - 1];
+      if (!lastM1 || m1Time >= (lastM1.endTime || lastM1.startTime + 60000)) {
+        lastM1 = {
+          startTime: m1Time,
+          endTime: m1Time + 60000,
+          open: event.price,
+          high: event.price,
+          low: event.price,
+          close: event.price,
+          totalVolume: event.size || 1,
+          cells: []
+        };
+        this.raw1mCandles.push(lastM1);
+      } else {
+        if (event.price > lastM1.high) lastM1.high = event.price;
+        if (event.price < lastM1.low) lastM1.low = event.price;
+        lastM1.close = event.price;
+        lastM1.totalVolume += (event.size || 1);
+      }
+    }
+
     // Dynamic Live TPO Profile Refresh (Throttled every 3.5s)
     if (this.tpoEngine && (!this._lastTpoUpdate || Date.now() - this._lastTpoUpdate > 3500)) {
       this._lastTpoUpdate = Date.now();
-      const sessions = this.tpoEngine.processCandles(this.aggregator.getAllCandles(), this.currentSymbol, this.currentTimeframeStr);
+      const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
       if (this.chartEngine) {
         this.chartEngine.setTpoSessions(sessions);
       }

@@ -5,13 +5,75 @@
 
 export class DeltaEngine {
   constructor() {
+    this.completedCvd = 0;
     this.cumulativeDelta = 0;
-    this.cvdHistory = []; // [{ timestamp, cvd, candleDelta }]
+    this.lastCandleTime = null;
+    this.cvdHistory = []; // [{ timestamp, cvd, candleDelta, high, low, close }]
+  }
+
+  clear() {
+    this.completedCvd = 0;
+    this.cumulativeDelta = 0;
+    this.lastCandleTime = null;
+    this.cvdHistory = [];
+  }
+
+  processCandles(candles) {
+    this.clear();
+    if (!Array.isArray(candles) || candles.length === 0) return [];
+    const sorted = [...candles].sort((a, b) => a.startTime - b.startTime);
+    const records = [];
+    for (const c of sorted) {
+      records.push(this.processCandle(c));
+    }
+    return records;
   }
 
   processCandle(candle) {
-    this.cumulativeDelta += candle.totalDelta;
-    
+    if (!candle) return null;
+
+    if (this.lastCandleTime !== null && candle.startTime === this.lastCandleTime) {
+      // In-progress active candle update:
+      // Update the current bar's CVD in-place without compounding
+      const currentCvd = this.completedCvd + candle.totalDelta;
+      this.cumulativeDelta = currentCvd;
+
+      if (this.cvdHistory.length > 0) {
+        const record = this.cvdHistory[this.cvdHistory.length - 1];
+        record.candleDelta = candle.totalDelta;
+        record.cvd = currentCvd;
+        record.high = candle.high;
+        record.low = candle.low;
+        record.close = candle.close;
+        return record;
+      }
+    }
+
+    if (this.lastCandleTime !== null && candle.startTime < this.lastCandleTime) {
+      // Out of order bar received: insert into history and recompute
+      this.cvdHistory = this.cvdHistory.filter(r => r.timestamp !== candle.startTime);
+      const tempBars = this.cvdHistory.map(r => ({
+        startTime: r.timestamp,
+        totalDelta: r.candleDelta,
+        high: r.high,
+        low: r.low,
+        close: r.close
+      }));
+      tempBars.push(candle);
+      return this.processCandles(tempBars)[this.cvdHistory.length - 1];
+    }
+
+    // New candle initiated:
+    // Lock the previous completed CVD baseline
+    if (this.lastCandleTime !== null && this.cvdHistory.length > 0) {
+      this.completedCvd = this.cvdHistory[this.cvdHistory.length - 1].cvd;
+    } else {
+      this.completedCvd = 0;
+    }
+
+    this.cumulativeDelta = this.completedCvd + candle.totalDelta;
+    this.lastCandleTime = candle.startTime;
+
     const record = {
       timestamp: candle.startTime,
       candleDelta: candle.totalDelta,

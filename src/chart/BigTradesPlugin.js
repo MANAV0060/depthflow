@@ -62,34 +62,41 @@ export class BigTradesPaneRenderer {
         const y = priceToCoordinate(trade.price);
         if (y === null || isNaN(y)) continue;
 
+        const isLiveTrade = trade.type === 'OBSERVED_LARGE_TRADE';
         const isBuy = trade.side === 'BUY';
         const baseRadius = trade.radius || 12;
         const scaledRadius = Math.max(2, Math.min(36, Math.round(baseRadius * zoomScale)));
 
-        // 1. Draw Translucent Glow Background (Low interference, high contrast)
+        // 1. Draw Translucent Glow Background
         ctx.save();
         ctx.beginPath();
         ctx.arc(x, y, scaledRadius, 0, Math.PI * 2);
 
-        // Fill styling
-        if (isBuy) {
-          ctx.fillStyle = 'rgba(8, 153, 129, 0.38)';
-          ctx.strokeStyle = '#0ef2b8';
-        } else {
-          ctx.fillStyle = 'rgba(242, 54, 69, 0.38)';
-          ctx.strokeStyle = '#ff5264';
-        }
-        ctx.lineWidth = Math.max(1, Math.min(2.5, scaledRadius * 0.1));
-        ctx.fill();
-        ctx.stroke();
-
-        // 2. Secondary outer subtle pulse ring (only when zoomed in enough)
-        if (barSpacing >= 8) {
-          ctx.beginPath();
-          ctx.arc(x, y, scaledRadius + 2.5, 0, Math.PI * 2);
-          ctx.strokeStyle = isBuy ? 'rgba(14, 242, 184, 0.35)' : 'rgba(255, 82, 100, 0.35)';
-          ctx.lineWidth = 1;
+        if (isLiveTrade) {
+          // Genuine individual live tape execution: high glow, solid border
+          ctx.fillStyle = isBuy ? 'rgba(8, 153, 129, 0.45)' : 'rgba(242, 54, 69, 0.45)';
+          ctx.strokeStyle = isBuy ? '#0ef2b8' : '#ff5264';
+          ctx.lineWidth = Math.max(1.5, Math.min(3, scaledRadius * 0.12));
+          ctx.fill();
           ctx.stroke();
+
+          // Outer pulse ring for observed live prints
+          if (barSpacing >= 8) {
+            ctx.beginPath();
+            ctx.arc(x, y, scaledRadius + 3, 0, Math.PI * 2);
+            ctx.strokeStyle = isBuy ? 'rgba(14, 242, 184, 0.5)' : 'rgba(255, 82, 100, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+        } else {
+          // Bar aggregated volume node: dashed border indicating concentration cluster
+          ctx.fillStyle = isBuy ? 'rgba(8, 153, 129, 0.28)' : 'rgba(242, 54, 69, 0.28)';
+          ctx.strokeStyle = isBuy ? 'rgba(14, 242, 184, 0.75)' : 'rgba(255, 82, 100, 0.75)';
+          ctx.lineWidth = Math.max(1, Math.min(2, scaledRadius * 0.08));
+          ctx.setLineDash([3, 2]);
+          ctx.fill();
+          ctx.stroke();
+          ctx.setLineDash([]);
         }
 
         // 3. Render Volume Text Label inside circle if size & zoom permit

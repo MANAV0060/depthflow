@@ -439,11 +439,22 @@ export class TPOSeriesPaneRenderer {
         const volRatio = Math.min(1.0, row.volume / maxVol);
         const barW = Math.max(2, Math.round((volW - 8) * volRatio));
         const isVolPoc = row.price === session.volPoc;
+        const inVolVa = (session.volVah !== null && session.volVal !== null)
+          ? (row.price <= session.volVah && row.price >= session.volVal)
+          : (session.vah !== null && session.val !== null && row.price <= session.vah && row.price >= session.val);
 
-        ctx.fillStyle = isVolPoc ? 'rgba(255, 215, 0, 0.40)' : (isDark ? 'rgba(14, 165, 233, 0.35)' : 'rgba(2, 132, 199, 0.30)');
+        if (isVolPoc) {
+          ctx.fillStyle = 'rgba(255, 215, 0, 0.45)';
+          ctx.strokeStyle = '#FFD700';
+        } else if (inVolVa) {
+          ctx.fillStyle = isDark ? 'rgba(14, 165, 233, 0.40)' : 'rgba(2, 132, 199, 0.35)';
+          ctx.strokeStyle = isDark ? 'rgba(56, 189, 248, 0.75)' : 'rgba(2, 132, 199, 0.75)';
+        } else {
+          ctx.fillStyle = isDark ? 'rgba(100, 116, 139, 0.20)' : 'rgba(148, 163, 184, 0.20)';
+          ctx.strokeStyle = isDark ? 'rgba(100, 116, 139, 0.40)' : 'rgba(148, 163, 184, 0.40)';
+        }
+
         ctx.fillRect(volLeft, drawY, barW, Math.max(1, rowHeight - 0.5));
-
-        ctx.strokeStyle = isVolPoc ? '#FFD700' : (isDark ? 'rgba(56, 189, 248, 0.70)' : 'rgba(2, 132, 199, 0.70)');
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(volLeft + barW, drawY);
@@ -462,6 +473,29 @@ export class TPOSeriesPaneRenderer {
     });
 
     ctx.restore();
+
+    // Volume Value Area High (vVAH) and Low (vVAL) bounds
+    if (opts.showVolPoc !== false && volW > 0 && session.volVah !== null && session.volVal !== null && sessionLOD !== 'COMPACT' && sessionLOD !== 'HISTORICAL_COMPACT') {
+      const vVahY = priceToCoordinate(session.volVah);
+      const vValY = priceToCoordinate(session.volVal);
+      ctx.save();
+      ctx.strokeStyle = isDark ? 'rgba(56, 189, 248, 0.55)' : 'rgba(2, 132, 199, 0.55)';
+      ctx.lineWidth = 0.9;
+      ctx.setLineDash([2, 3]);
+      if (vVahY !== null) {
+        ctx.beginPath();
+        ctx.moveTo(volLeft, vVahY);
+        ctx.lineTo(volLeft + volW, vVahY);
+        ctx.stroke();
+      }
+      if (vValY !== null) {
+        ctx.beginPath();
+        ctx.moveTo(volLeft, vValY);
+        ctx.lineTo(volLeft + volW, vValY);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
 
     // =========================================================================
     // 4. Point of Control (POC / dPOC) - Crisp golden line
@@ -644,7 +678,7 @@ export class TPOSeriesPaneRenderer {
     }
 
     // =========================================================================
-    // 7. Poor High / Poor Low Heuristic Markers
+    // 7. Poor Extremes & Excess Markers
     // =========================================================================
     if (opts.showPoorExtremes !== false && sessionLOD !== 'HISTORICAL_COMPACT' && sessionLOD !== 'COMPACT') {
       ctx.save();
@@ -656,6 +690,14 @@ export class TPOSeriesPaneRenderer {
           ctx.textAlign = 'left';
           ctx.fillText('⚡ Poor High', profileOriginX, topYCoord - 3);
         }
+      } else if (session.excessHigh) {
+        const topYCoord = priceToCoordinate(session.high);
+        if (topYCoord !== null) {
+          ctx.font = '700 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+          ctx.fillStyle = '#10b981';
+          ctx.textAlign = 'left';
+          ctx.fillText('✨ Excess High (Tail)', profileOriginX, topYCoord - 3);
+        }
       }
       if (session.poorLow) {
         const botYCoord = priceToCoordinate(session.low);
@@ -664,6 +706,14 @@ export class TPOSeriesPaneRenderer {
           ctx.fillStyle = '#ef4444';
           ctx.textAlign = 'left';
           ctx.fillText('⚡ Poor Low', profileOriginX, botYCoord + 9);
+        }
+      } else if (session.excessLow) {
+        const botYCoord = priceToCoordinate(session.low);
+        if (botYCoord !== null) {
+          ctx.font = '700 8px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace';
+          ctx.fillStyle = '#10b981';
+          ctx.textAlign = 'left';
+          ctx.fillText('✨ Excess Low (Tail)', profileOriginX, botYCoord + 9);
         }
       }
       ctx.restore();

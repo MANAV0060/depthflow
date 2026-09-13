@@ -164,7 +164,9 @@ def load_candles(
                 "maxDelta": row["max_delta"],
                 "minDelta": row["min_delta"],
                 "pocPrice": row["poc_price"],
-                "cells": cells
+                "cells": cells,
+                "fidelity": "RECONSTRUCTED_HISTORICAL_BARS",
+                "provenance": "RECONSTRUCTED_HISTORICAL_FOOTPRINT"
             })
     finally:
         conn.close()

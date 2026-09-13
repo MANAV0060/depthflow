@@ -133,80 +133,103 @@ def synthesize_footprint_cells(symbol, open_p, high_p, low_p, close_p, volume, t
     if poc_p not in levels:
         poc_p = levels[len(levels) // 2]
         
-    # Gaussian bell curve centered on POC with natural market depth variance
-    sigma = max(2.2, len(levels) / 3.4)
+    # Analytical POC determination:
+    # Volume-weighted center between open, close, and candle midpoint
+    poc_raw = (open_p + close_p * 2.0 + (high_p + low_p) * 0.5) / 3.5
+    poc_p = round(round(poc_raw / tick_size) * tick_size, decimals)
+    if poc_p not in levels:
+        poc_p = levels[len(levels) // 2]
+        
+    # Deterministic Gaussian bell curve centered on POC
+    sigma = max(1.8, len(levels) / 3.2)
     total_weight = 0.0
     weights = {}
     for lvl in levels:
         dist = abs(lvl - poc_p) / (tick_size or 1)
         gaussian = math.exp(-0.5 * ((dist / sigma) ** 2))
-        noise = random.uniform(0.82, 1.20)
-        w = max(0.05, gaussian * noise)
+        in_body = (min(open_p, close_p) - tick_size * 0.5) <= lvl <= (max(open_p, close_p) + tick_size * 0.5)
+        body_boost = 1.15 if in_body else 0.85
+        w = max(0.05, gaussian * body_boost)
         weights[lvl] = w
         total_weight += w
         
     scale = get_volume_scale_for_symbol(symbol)
     raw_vol = int(volume or 45)
-    vol_pool = max(len(levels) * 12000, raw_vol * scale)
-    is_bull = close_p >= open_p
-    
-    cells = []
-    total_delta = 0
-    max_delta = 0
-    min_delta = 0
-    running_delta = 0
+    vol_pool = max(len(levels) * 1200, raw_vol * scale)
     
     sorted_levels = sorted(levels, reverse=True)
     num_lvls = len(sorted_levels)
     
+    # Net directional pressure of the candle
+    is_bull = close_p > open_p
+    is_bear = close_p < open_p
+    candle_range = max(high_p - low_p, tick_size)
+    body_pct = abs(close_p - open_p) / candle_range
+    
+    # Base buy ratio reflects bar net delta
+    if is_bull:
+        base_buy_ratio = 0.50 + min(0.25, 0.10 + body_pct * 0.15)
+    elif is_bear:
+        base_buy_ratio = 0.50 - min(0.25, 0.10 + body_pct * 0.15)
+    else:
+        base_buy_ratio = 0.50
+        
+    cells = []
     for idx, lvl in enumerate(sorted_levels):
-        lvl_vol = max(1200, int((weights[lvl] / total_weight) * vol_pool))
+        lvl_vol = max(100, int((weights[lvl] / total_weight) * vol_pool))
         pos = idx / max(1, num_lvls - 1)
         
-        base_buy_ratio = 0.54 if is_bull else 0.46
-        
+        # Deterministic ratio modulation across price levels
         if pos < 0.15:
-            # High exhaustion / absorption
-            buy_ratio = base_buy_ratio - random.uniform(0.08, 0.18)
+            buy_ratio = base_buy_ratio - (0.08 if is_bull else 0.04)
         elif pos > 0.85:
-            # Low exhaustion / absorption
-            buy_ratio = base_buy_ratio + random.uniform(0.08, 0.18)
+            buy_ratio = base_buy_ratio + (0.08 if is_bear else 0.04)
         elif lvl == poc_p:
-            buy_ratio = 0.58 if is_bull else 0.42
+            buy_ratio = base_buy_ratio + (0.05 if is_bull else -0.05)
         else:
-            buy_ratio = base_buy_ratio + random.uniform(-0.08, 0.08)
+            ratio_offset = 0.04 * math.sin(idx * math.pi / max(1, num_lvls - 1))
+            buy_ratio = base_buy_ratio + (ratio_offset if is_bull else -ratio_offset)
             
-        if random.random() < 0.12 and lvl != poc_p:
-            if is_bull:
-                buy_ratio = random.uniform(0.74, 0.85)
-            else:
-                buy_ratio = random.uniform(0.15, 0.26)
-                
-        buy_ratio = max(0.18, min(0.82, buy_ratio))
-        buy_vol = max(200, int(lvl_vol * buy_ratio))
-        sell_vol = max(200, lvl_vol - buy_vol)
+        buy_ratio = max(0.15, min(0.85, buy_ratio))
+        buy_vol = max(10, int(lvl_vol * buy_ratio))
+        sell_vol = max(10, lvl_vol - buy_vol)
+        actual_cell_vol = buy_vol + sell_vol
         delta = buy_vol - sell_vol
-        
-        running_delta += delta
-        if running_delta > max_delta: max_delta = running_delta
-        if running_delta < min_delta: min_delta = running_delta
-        total_delta += delta
         
         cells.append({
             "price": lvl,
             "buyVolume": buy_vol,
             "sellVolume": sell_vol,
-            "totalVolume": buy_vol + sell_vol,
+            "totalVolume": actual_cell_vol,
             "delta": delta
         })
         
+    # Enforce exact Bar Delta = sum(cell.delta)
+    total_delta = sum(c["delta"] for c in cells)
+    
+    # Deterministic delta bounds
+    if is_bull:
+        min_delta = min(0, int(-abs(total_delta) * 0.15))
+        max_delta = max(total_delta, int(total_delta * 1.1))
+    elif is_bear:
+        max_delta = max(0, int(abs(total_delta) * 0.15))
+        min_delta = min(total_delta, int(total_delta * 1.1))
+    else:
+        half = abs(total_delta) or int(vol_pool * 0.05)
+        max_delta = half
+        min_delta = -half
+
     return cells, poc_p, total_delta, max_delta, min_delta
 
 MT5_TIMEFRAMES = {
     "1m": (getattr(mt5, "TIMEFRAME_M1", 1), 60000),
     "5m": (getattr(mt5, "TIMEFRAME_M5", 5), 300000),
     "15m": (getattr(mt5, "TIMEFRAME_M15", 15), 900000),
-    "1h": (getattr(mt5, "TIMEFRAME_H1", 16385), 3600000)
+    "30m": (getattr(mt5, "TIMEFRAME_M30", 30), 1800000),
+    "1h": (getattr(mt5, "TIMEFRAME_H1", 16385), 3600000),
+    "4h": (getattr(mt5, "TIMEFRAME_H4", 16388), 14400000),
+    "1d": (getattr(mt5, "TIMEFRAME_D1", 16408), 86400000),
+    "d": (getattr(mt5, "TIMEFRAME_D1", 16408), 86400000)
 }
 
 def sync_and_load_candles(mt5_symbol, ui_symbol, count=1000, timeframe="1m", before_ts=None):
@@ -253,7 +276,9 @@ def sync_and_load_candles(mt5_symbol, ui_symbol, count=1000, timeframe="1m", bef
                     "maxDelta": max_delta,
                     "minDelta": min_delta,
                     "pocPrice": poc_p,
-                    "cells": cells
+                    "cells": cells,
+                    "fidelity": "RECONSTRUCTED_HISTORICAL_BARS",
+                    "provenance": "RECONSTRUCTED_HISTORICAL_FOOTPRINT"
                 })
             save_candles_bulk(batch, timeframe)
 
@@ -321,6 +346,16 @@ async def handle_client(websocket, path=None):
     if initial_candles:
         await send_candles_in_safe_chunks(websocket, active_ui_symbol, active_timeframe, initial_candles, chunk_size=350)
 
+    # Dedicated persistent 1m candles for timeframe-independent TPO calculation
+    tpo_1m_candles = sync_and_load_candles(mt5_symbol, active_ui_symbol, 2000, "1m")
+    if tpo_1m_candles:
+        await websocket.send(json.dumps({
+            "type": "tpo_1m_candles",
+            "symbol": active_ui_symbol,
+            "candles": tpo_1m_candles
+        }))
+        print(f"[MT5 Bridge] Sent {len(tpo_1m_candles)} dedicated 1m candles for TPO analysis ({active_ui_symbol})")
+
     # Generate & send initial 5-6 month liquidation heatmap
     try:
         heatmap_matrix = liquidation_engine.compute_historical_heatmap(mt5_symbol, active_ui_symbol)
@@ -367,6 +402,16 @@ async def handle_client(websocket, path=None):
                         fresh_candles = sync_and_load_candles(mt5_symbol, active_ui_symbol, 2000, active_timeframe)
                         if fresh_candles:
                             await send_candles_in_safe_chunks(websocket, active_ui_symbol, active_timeframe, fresh_candles, chunk_size=350)
+
+                        # Dedicated persistent 1m candles for timeframe-independent TPO calculation
+                        fresh_tpo_1m = sync_and_load_candles(mt5_symbol, active_ui_symbol, 2000, "1m")
+                        if fresh_tpo_1m:
+                            await websocket.send(json.dumps({
+                                "type": "tpo_1m_candles",
+                                "symbol": active_ui_symbol,
+                                "candles": fresh_tpo_1m
+                            }))
+                            print(f"[MT5 Bridge] Sent {len(fresh_tpo_1m)} dedicated 1m candles for TPO analysis ({active_ui_symbol})")
 
                         # Update liquidation heatmap for switched symbol
                         try:

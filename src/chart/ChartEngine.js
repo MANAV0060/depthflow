@@ -8,10 +8,10 @@
  */
 
 import { FootprintRenderer } from './FootprintRenderer.js';
-import { FootprintSeriesPaneView } from './FootprintSeriesPlugin.js?v=tv2';
-import { BigTradesPaneView } from './BigTradesPlugin.js?v=tv2';
-import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=tpo_live_v4';
-import { LiquidationHeatmapRenderer } from './LiquidationHeatmapRenderer.js?v=tv1';
+import { FootprintSeriesPaneView } from './FootprintSeriesPlugin.js?v=orderflow_v5';
+import { BigTradesPaneView } from './BigTradesPlugin.js?v=orderflow_v5';
+import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=orderflow_v5';
+import { LiquidationHeatmapRenderer } from './LiquidationHeatmapRenderer.js?v=orderflow_v5';
 
 export class ChartEngine {
   constructor(mainContainerId, cvdContainerId) {
@@ -389,6 +389,11 @@ export class ChartEngine {
           const priceStr = Number(hitTrade.price).toFixed(hitTrade.price > 100 ? 2 : 5);
           const candleTimeStr = `${this._formatTimeIST(Math.floor(hitCandle.startTime / 1000), true)} (IST)`;
 
+          const isLive = hitTrade.type === 'OBSERVED_LARGE_TRADE' || hitTrade.provenance === 'OBSERVED_FEED_EVENT';
+          const title = isLive
+            ? `OBSERVED BROKER-FEED PRINT (${hitTrade.side})`
+            : `VOLUME CONCENTRATION NODE (${hitTrade.side})`;
+
           tooltipEl.innerHTML = `
             <div class="bt-tooltip-hdr" style="color: ${sideColor}">
               <span class="bt-badge-dot" style="background: ${sideColor}"></span>
@@ -397,8 +402,8 @@ export class ChartEngine {
             <div class="bt-row"><span class="bt-lbl">Volume:</span> <strong class="bt-val">${volStr} (${hitTrade.formattedVol || ''})</strong></div>
             <div class="bt-row"><span class="bt-lbl">Price:</span> <span class="bt-val">${priceStr}</span></div>
             <div class="bt-row"><span class="bt-lbl">Aggressor Side:</span> <span class="bt-val" style="color: ${sideColor}">${hitTrade.side}</span></div>
-            <div class="bt-row"><span class="bt-lbl">Event Type:</span> <span class="bt-val">${hitTrade.eventType || 'EXECUTION'}</span></div>
-            <div class="bt-row"><span class="bt-lbl">Data Source:</span> <span class="bt-val source">${hitTrade.fidelitySource || 'Broker Volume'}</span></div>
+            <div class="bt-row"><span class="bt-lbl">Event Type:</span> <span class="bt-val">${hitTrade.fidelityLabel || hitTrade.eventType || (isLive ? 'Observed Broker Trade' : 'Volume Node')}</span></div>
+            <div class="bt-row"><span class="bt-lbl">Data Provenance:</span> <span class="bt-val source">${hitTrade.fidelitySource || (isLive ? 'Observed Broker Feed Event' : 'Reconstructed Historical Footprint')}</span></div>
             <div class="bt-row"><span class="bt-lbl">Timeframe:</span> <span class="bt-val">${hitTrade.timeframe || '1m'} (${hitTrade.timeframeScale || 1.0}x scale)</span></div>
             <div class="bt-row"><span class="bt-lbl">Candle Time:</span> <span class="bt-val">${candleTimeStr}</span></div>
           `;
