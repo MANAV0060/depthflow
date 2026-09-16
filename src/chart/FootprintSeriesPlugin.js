@@ -13,18 +13,32 @@ export class FootprintSeriesPaneRenderer {
     this._options = null;
   }
 
+  setVisible(visible) {
+    if (!this._options) this._options = {};
+    this._options.visible = visible;
+  }
+
+  setChartMode(chartMode) {
+    if (!this._options) this._options = {};
+    this._options.chartMode = chartMode;
+  }
+
   update(data, options) {
     this._data = data;
     this._options = options;
   }
 
   draw(target, priceToCoordinate) {
+    if (this._options && this._options.visible === false) return;
+    if (this._options && this._options.chartMode && this._options.chartMode !== 'FOOTPRINT') return;
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
       this._drawImpl(ctx, priceToCoordinate, mediaSize);
     });
   }
 
   _drawImpl(ctx, priceToCoordinate, mediaSize) {
+    if (this._options && this._options.visible === false) return;
+    if (this._options && this._options.chartMode && this._options.chartMode !== 'FOOTPRINT') return;
     if (!this._data || !this._data.bars || this._data.bars.length === 0) return;
 
     const barSpacing = this._data.barSpacing || 75;
@@ -624,6 +638,22 @@ export class FootprintSeriesPaneView {
 
   setStyle(style) {
     this._customOptions.style = style;
+  }
+
+  setVisible(visible) {
+    this._customOptions.visible = visible;
+    this._renderer.setVisible(visible);
+  }
+
+  setChartMode(chartMode) {
+    this._customOptions.chartMode = chartMode;
+    this._renderer.setChartMode(chartMode);
+  }
+
+  setOptions(options) {
+    Object.assign(this._customOptions, options);
+    if (options.visible !== undefined) this._renderer.setVisible(options.visible);
+    if (options.chartMode !== undefined) this._renderer.setChartMode(options.chartMode);
   }
 
   setImbalanceRatio(ratio) {

@@ -286,7 +286,34 @@ export class TPOSeriesPaneRenderer {
     // Determine horizontal profile placement
     let profileOriginX = leftX;
     if (position === 'RIGHT') {
-      profileOriginX = Math.max(leftX + 10, rightX - allocatedWidth - 8);
+      if (isLatestSession || isDeveloping) {
+        // Active / developing session: place completely clear of the live forming candlesticks
+        const candleClearance = Math.max(16, Math.min(32, Math.floor(currentBarSpacing * 1.2)));
+        const targetOriginX = rightX + candleClearance;
+        const labelPadding = (profileType === 'TPO_VOLUME' || profileType === 'VOLUME') ? 70 : 15;
+        const totalCardWidth = allocatedWidth + labelPadding;
+
+        // Check available room between targetOriginX and the right screen boundary
+        const availableToRight = (mediaWidth - 12) - targetOriginX;
+
+        if (availableToRight >= 160) {
+          // Normal case: clean right margin available
+          profileOriginX = targetOriginX;
+          // Ensure profile plus labels never overflow the right canvas boundary
+          if (profileOriginX + totalCardWidth > mediaWidth - 12) {
+            allocatedWidth = Math.max(110, (mediaWidth - 12) - profileOriginX - labelPadding);
+          }
+        } else {
+          // If the live candle is near the right edge, keep profile fully visible on screen
+          profileOriginX = Math.max(10, mediaWidth - totalCardWidth - 12);
+          if (profileOriginX + totalCardWidth > mediaWidth - 12) {
+            allocatedWidth = Math.max(90, (mediaWidth - 12) - profileOriginX - labelPadding);
+          }
+        }
+      } else {
+        // Closed / historical session: anchored cleanly inside the session's right boundary
+        profileOriginX = Math.max(leftX + 10, rightX - allocatedWidth - 8);
+      }
     } else if (position === 'OVERLAY') {
       profileOriginX = leftX + Math.floor((sessionSpan - allocatedWidth) / 2);
     } else {
@@ -353,7 +380,7 @@ export class TPOSeriesPaneRenderer {
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
       const labelText = isDeveloping ? `${session.sessionKey} (Active)` : session.sessionKey;
-      ctx.fillText(labelText, leftX + 4, topY - 4);
+      ctx.fillText(labelText, profileOriginX, topY - 4);
     }
     ctx.restore();
 

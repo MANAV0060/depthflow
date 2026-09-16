@@ -14,15 +14,25 @@ import { TPOSeriesPaneView } from './TPOSeriesPlugin.js?v=orderflow_v5';
 import { LiquidationHeatmapRenderer } from './LiquidationHeatmapRenderer.js?v=orderflow_v5';
 
 export class ChartEngine {
-  constructor(mainContainerId, cvdContainerId) {
-    this.container = document.getElementById(mainContainerId);
+  constructor(mainContainer, options = {}) {
+    if (typeof options === 'string') {
+      this.cvdContainer = document.getElementById(options);
+      options = {};
+    } else {
+      this.cvdContainer = options.cvdContainerId ? document.getElementById(options.cvdContainerId) : (options.cvdContainer || null);
+    }
+
+    this.container = (typeof mainContainer === 'string') ? document.getElementById(mainContainer) : mainContainer;
+    this.panelId = options.panelId || (this.container ? (this.container.id || 'panel-main') : 'panel-main');
+    this.isMainPanel = options.isMainPanel !== undefined ? options.isMainPanel : (this.panelId === 'panel-1' || !options.panelId || this.panelId === 'panel-main');
     this.overviewContainer = document.getElementById('overviewChartArea');
     this.overviewChart = null;
     this.overviewSeries = null;
     this.layoutMode = 'SINGLE'; // 'SINGLE' | 'SPLIT'
     this.splitRatio = 0.5; // Resizable split proportion (0.15 to 0.85)
-    this.cvdContainer = document.getElementById(cvdContainerId);
-    this.tableDataContainer = document.getElementById('tvTableData');
+    this.subPanes = options.subPanes || { cvd: false, deltaSummary: false };
+    this.summaryTable = options.summaryTable || null;
+    this.tableDataContainer = options.tableDataContainer || (this.summaryTable ? this.summaryTable.querySelector('.tv-table-data') : null);
 
     this.chart = null;
     this.candlestickSeries = null;
@@ -30,29 +40,29 @@ export class ChartEngine {
     this.footprintSeriesView = null;
     this.bigTradesSeries = null;
     this.bigTradesSeriesView = null;
-    this.bigTradesVisible = true;
+    this.bigTradesVisible = options.bigTradesVisible !== undefined ? options.bigTradesVisible : true;
     this.tpoSeries = null;
     this.tpoSeriesView = null;
     this.tpoSessions = [];
-    this.footprintStyle = 'PROFILE';
-    this.theme = 'DARK';
+    this.footprintStyle = options.footprintStyle || 'PROFILE';
+    this.theme = options.theme || 'DARK';
     this.cvdChart = null;
     this.cvdSeries = null;
     this.footprintRenderer = null;
     this.liquidationRenderer = null;
     this.candles = [];
-    this.chartMode = 'FOOTPRINT'; // 'FOOTPRINT' | 'CANDLESTICK' | 'TPO'
+    this.chartMode = options.chartMode || 'FOOTPRINT'; // 'FOOTPRINT' | 'CANDLESTICK' | 'TPO'
     this._hasInitiallyFocused = false;
 
     // Active Symbol & Timeframe Context
-    this.currentSymbol = 'EUR/USD';
-    this.currentTimeframeMs = 60000;
-    this.currentTimeframeStr = '1m';
+    this.currentSymbol = options.symbol || 'EUR/USD';
+    this.currentTimeframeMs = options.timeframeMs || 60000;
+    this.currentTimeframeStr = options.timeframeStr || '1m';
     this.currentPrice = null;
     this.prevPrice = null;
     this.activeCandle = null;
     this._countdownInterval = null;
-    this.timeFormat = localStorage.getItem('depthflow_time_format') || '12H';
+    this.timeFormat = options.timeFormat || localStorage.getItem('depthflow_time_format') || '12H';
     this._pendingTargetSpan = null;
 
     // Live Price Tracker DOM Element References
@@ -63,19 +73,24 @@ export class ChartEngine {
     this.livePriceNum = null;
     this.livePriceTimer = null;
 
-    const canvasEl = document.getElementById('footprintCanvas');
+    // Cleanups tracker for destroy()
+    this._cleanups = [];
+
+    const canvasEl = this.container ? (this.container.querySelector('.footprintCanvas') || this.container.querySelector('#footprintCanvas') || document.getElementById('footprintCanvas')) : null;
     if (canvasEl) {
       this.footprintRenderer = new FootprintRenderer(canvasEl);
     }
 
-    const liqCanvasEl = document.getElementById('liquidationCanvas');
+    const liqCanvasEl = this.container ? (this.container.querySelector('.liquidationCanvas') || this.container.querySelector('#liquidationCanvas') || document.getElementById('liquidationCanvas')) : null;
     if (liqCanvasEl) {
       this.liquidationRenderer = new LiquidationHeatmapRenderer(liqCanvasEl);
     }
 
     this._initCharts();
     this._bindInteractionEvents();
-    this._initSplitResizer();
+    if (options.isLegacyOverviewSplit) {
+      this._initSplitResizer();
+    }
   }
 
   _initCharts() {
@@ -112,8 +127,8 @@ export class ChartEngine {
           borderColor: '#2a2e39',
           autoScale: true,
           scaleMargins: {
-            top: 0.10,
-            bottom: 0.22
+            top: 0.06,
+            bottom: 0.06
           }
         },
         handleScale: {
@@ -132,7 +147,8 @@ export class ChartEngine {
           borderColor: '#2a2e39',
           timeVisible: true,
           secondsVisible: false,
-          barSpacing: 105,
+          barSpacing: 16,
+          rightOffset: 25,
           minBarSpacing: 0.55,
           tickMarkFormatter: (time, tickMarkType, locale) => {
             const ts = (typeof time === 'number') ? time : (time && time.timestamp ? time.timestamp : 0);
@@ -158,9 +174,12 @@ export class ChartEngine {
       // Native TradingView Custom Series: Footprint Engine
       this.footprintSeriesView = new FootprintSeriesPaneView({
         theme: this.theme,
-        style: this.footprintStyle
+        style: this.footprintStyle,
+        visible: this.chartMode === 'FOOTPRINT',
+        chartMode: this.chartMode
       });
       this.footprintSeries = this.chart.addCustomSeries(this.footprintSeriesView, {
+        visible: this.chartMode === 'FOOTPRINT',
         priceLineVisible: false,
         lastValueVisible: false,
         priceFormat: defaultPriceFormat
@@ -248,6 +267,7 @@ export class ChartEngine {
       this.chart.timeScale().subscribeVisibleTimeRangeChange(() => {
         this._renderCanvasOverlay();
         this._updateLiveTracker();
+        this._renderSummaryTable();
       });
 
       // Initialize Live Price Tracker Overlay with active symbol and countdown timer
@@ -261,8 +281,16 @@ export class ChartEngine {
   _bindInteractionEvents() {
     if (!this.container) return;
 
+    const addListener = (target, event, handler, options) => {
+      if (!target) return;
+      target.addEventListener(event, handler, options);
+      this._cleanups.push(() => {
+        try { target.removeEventListener(event, handler, options); } catch (e) {}
+      });
+    };
+
     // Track mouse dragging on chart / price scale to guarantee continuous 60fps canvas sync
-    this.container.addEventListener('mousemove', (e) => {
+    addListener(this.container, 'mousemove', (e) => {
       if (e.buttons === 1) {
         requestAnimationFrame(() => {
           this._renderCanvasOverlay();
@@ -272,7 +300,7 @@ export class ChartEngine {
     });
 
     // Responsive Bounded Wheel Zoom Engine (TradingView Sensitivity & Timeframe Limits)
-    this.container.addEventListener('wheel', (e) => {
+    addListener(this.container, 'wheel', (e) => {
       if (e.shiftKey || !this.chart) return;
 
       const timeScale = this.chart.timeScale();
@@ -339,7 +367,14 @@ export class ChartEngine {
     }, { passive: false });
 
     // Interactive Big Trades inspection tooltip on hover & click
-    const tooltipEl = document.getElementById('bigTradeTooltip');
+    let tooltipEl = this.container.querySelector('.big-trade-tooltip') || document.getElementById('bigTradeTooltip');
+    if (!tooltipEl && this.container) {
+      tooltipEl = document.createElement('div');
+      tooltipEl.className = 'big-trade-tooltip hidden';
+      this.container.appendChild(tooltipEl);
+    }
+    this.bigTradeTooltipEl = tooltipEl;
+
     if (tooltipEl) {
       const inspectBigTrade = (e, isClick = false) => {
         if (!this.bigTradesVisible || !this.candles || this.candles.length === 0 || !this.chart || !this.candlestickSeries) {
@@ -424,14 +459,27 @@ export class ChartEngine {
         }
       };
 
-      this.container.addEventListener('mousemove', (e) => inspectBigTrade(e, false));
-      this.container.addEventListener('click', (e) => inspectBigTrade(e, true));
-      this.container.addEventListener('mouseleave', () => tooltipEl.classList.add('hidden'));
+      addListener(this.container, 'mousemove', (e) => inspectBigTrade(e, false));
+      addListener(this.container, 'click', (e) => inspectBigTrade(e, true));
+      addListener(this.container, 'mouseleave', () => tooltipEl.classList.add('hidden'));
     }
 
     // Interactive TPO Profile Hover Tooltip & Session Inspector
-    const tpoTooltipEl = document.getElementById('tpoHoverTooltip');
-    const tpoInspectorEl = document.getElementById('tpoSessionInspector');
+    let tpoTooltipEl = this.container.querySelector('.tpo-hover-tooltip') || document.getElementById('tpoHoverTooltip');
+    if (!tpoTooltipEl && this.container) {
+      tpoTooltipEl = document.createElement('div');
+      tpoTooltipEl.className = 'tpo-hover-tooltip hidden';
+      this.container.appendChild(tpoTooltipEl);
+    }
+    this.tpoHoverTooltipEl = tpoTooltipEl;
+
+    let tpoInspectorEl = this.container.querySelector('.tpo-session-inspector') || document.getElementById('tpoSessionInspector');
+    if (!tpoInspectorEl && this.container) {
+      tpoInspectorEl = document.createElement('div');
+      tpoInspectorEl.className = 'tpo-session-inspector hidden';
+      this.container.appendChild(tpoInspectorEl);
+    }
+    this.tpoInspectorEl = tpoInspectorEl;
 
     if (tpoTooltipEl || tpoInspectorEl) {
       const inspectTpo = (e, isDblClick = false) => {
@@ -653,13 +701,13 @@ export class ChartEngine {
       };
 
       // Hover on profile blocks only
-      this.container.addEventListener('mousemove', (e) => inspectTpo(e, false));
+      addListener(this.container, 'mousemove', (e) => inspectTpo(e, false));
 
       // Double-click to open session inspector card
-      this.container.addEventListener('dblclick', (e) => inspectTpo(e, true));
+      addListener(this.container, 'dblclick', (e) => inspectTpo(e, true));
 
       // Single click dismisses open inspector popup if clicking away
-      this.container.addEventListener('click', (e) => {
+      addListener(this.container, 'click', (e) => {
         if (tpoInspectorEl && !tpoInspectorEl.classList.contains('hidden')) {
           if (!tpoInspectorEl.contains(e.target)) {
             tpoInspectorEl.classList.add('hidden');
@@ -667,12 +715,12 @@ export class ChartEngine {
         }
       });
 
-      this.container.addEventListener('mouseleave', () => {
+      addListener(this.container, 'mouseleave', () => {
         if (tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
       });
 
       // Escape key to dismiss popups immediately
-      window.addEventListener('keydown', (e) => {
+      addListener(window, 'keydown', (e) => {
         if (e.key === 'Escape') {
           if (tpoInspectorEl) tpoInspectorEl.classList.add('hidden');
           if (tpoTooltipEl) tpoTooltipEl.classList.add('hidden');
@@ -832,11 +880,33 @@ export class ChartEngine {
     }
   }
 
+  setMainPanel(isMain) {
+    this.isMainPanel = isMain;
+  }
+
+  setSubPanes(subPanes) {
+    this.subPanes = Object.assign(this.subPanes || {}, subPanes);
+  }
+
+  renderSummaryTable() {
+    this._renderSummaryTable();
+  }
+
+  setCvdData(records) {
+    if (this.cvdSeries) {
+      try {
+        this.cvdSeries.setData(records || []);
+        if (this.cvdChart && records && records.length > 0) {
+          this.cvdChart.timeScale().fitContent();
+        }
+      } catch (e) {}
+    }
+  }
+
   setChartMode(mode) {
     this.chartMode = mode;
     const isCandle = mode === 'CANDLESTICK';
     const isTpo = mode === 'TPO';
-    const summaryTable = document.getElementById('tvSummaryTable');
 
     if (this.tpoOptions) {
       this.tpoOptions.chartMode = mode;
@@ -855,59 +925,116 @@ export class ChartEngine {
         this.candlestickSeries.applyOptions({ visible: true });
       }
       if (this.footprintSeries) {
-        this.footprintSeries.applyOptions({ visible: false });
+        this.footprintSeries.applyOptions({ visible: false, chartMode: mode });
+      }
+      if (this.footprintSeriesView) {
+        this.footprintSeriesView.setVisible(false);
+        this.footprintSeriesView.setChartMode(mode);
       }
       if (this.tpoSeries) {
-        this.tpoSeries.applyOptions({ visible: true });
+        this.tpoSeries.applyOptions({ visible: true, chartMode: mode });
+      }
+      if (this.tpoSeriesView) {
+        this.tpoSeriesView.setOptions({ visible: true, chartMode: mode });
       }
       if (this.chart) {
+        this.chart.priceScale('right').applyOptions({
+          autoScale: true,
+          scaleMargins: { top: 0.06, bottom: 0.06 }
+        });
         this.chart.timeScale().applyOptions({
+          barSpacing: 16,
+          rightOffset: 25,
           minBarSpacing: this._getMinBarSpacingForTimeframe()
         });
+        const total = this.candles.length;
+        if (total > 0) {
+          this.chart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, total - 50),
+            to: total + 25
+          });
+        }
       }
-      if (summaryTable) summaryTable.style.display = 'none';
+      this.resize();
+      requestAnimationFrame(() => this.resize());
     } else if (isCandle) {
       if (this.candlestickSeries) {
         this.candlestickSeries.applyOptions({ visible: true });
       }
       if (this.footprintSeries) {
-        this.footprintSeries.applyOptions({ visible: false });
+        this.footprintSeries.applyOptions({ visible: false, chartMode: mode });
+      }
+      if (this.footprintSeriesView) {
+        this.footprintSeriesView.setVisible(false);
+        this.footprintSeriesView.setChartMode(mode);
       }
       if (this.tpoSeries) {
-        this.tpoSeries.applyOptions({ visible: false });
+        this.tpoSeries.applyOptions({ visible: false, chartMode: mode });
+      }
+      if (this.tpoSeriesView) {
+        this.tpoSeriesView.setOptions({ visible: false, chartMode: mode });
       }
       if (this.chart) {
+        this.chart.priceScale('right').applyOptions({
+          autoScale: true,
+          scaleMargins: { top: 0.06, bottom: 0.06 }
+        });
         this.chart.timeScale().applyOptions({
+          barSpacing: 14,
+          rightOffset: 8,
           minBarSpacing: this._getMinBarSpacingForTimeframe()
         });
+        const total = this.candles.length;
+        if (total > 0) {
+          this.chart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, total - 70),
+            to: total + 8
+          });
+        }
       }
-      if (summaryTable) summaryTable.style.display = 'none';
+      this.resize();
+      requestAnimationFrame(() => this.resize());
     } else {
       if (this.candlestickSeries) {
         this.candlestickSeries.applyOptions({ visible: false });
       }
       if (this.footprintSeries) {
-        this.footprintSeries.applyOptions({ visible: true });
+        this.footprintSeries.applyOptions({ visible: true, chartMode: mode });
+      }
+      if (this.footprintSeriesView) {
+        this.footprintSeriesView.setVisible(true);
+        this.footprintSeriesView.setChartMode(mode);
       }
       if (this.tpoSeries) {
-        this.tpoSeries.applyOptions({ visible: false });
+        this.tpoSeries.applyOptions({ visible: false, chartMode: mode });
+      }
+      if (this.tpoSeriesView) {
+        this.tpoSeriesView.setOptions({ visible: false, chartMode: mode });
       }
       if (this.chart) {
+        this.chart.priceScale('right').applyOptions({
+          autoScale: true,
+          scaleMargins: { top: 0.06, bottom: 0.18 }
+        });
         this.chart.timeScale().applyOptions({
+          barSpacing: 85,
+          rightOffset: 4,
           minBarSpacing: this._getMinBarSpacingForTimeframe()
         });
         const total = this.candles.length;
         if (total > 0 && !this._hasInitiallyFocused) {
           this._hasInitiallyFocused = true;
-          this.chart.timeScale().applyOptions({ barSpacing: 85 });
           this.chart.timeScale().setVisibleLogicalRange({
             from: Math.max(0, total - 14),
-            to: total + 1
+            to: total + 4
           });
         }
       }
-      if (summaryTable) summaryTable.style.display = 'flex';
-      this._renderSummaryTable();
+      this.resize();
+      requestAnimationFrame(() => {
+        this.resize();
+        this._renderSummaryTable();
+      });
     }
   }
 
@@ -1118,7 +1245,7 @@ export class ChartEngine {
     if (this.bigTradesSeries) {
       this.bigTradesSeries.applyOptions({ visible });
     }
-    const tooltipEl = document.getElementById('bigTradeTooltip');
+    const tooltipEl = this.bigTradeTooltipEl || (this.container ? this.container.querySelector('.big-trade-tooltip') : null) || document.getElementById('bigTradeTooltip');
     if (tooltipEl && !visible) {
       tooltipEl.classList.add('hidden');
     }
@@ -1283,11 +1410,27 @@ export class ChartEngine {
         this.tpoSeries.applyOptions({ timeframeStr });
       } catch (e) {}
     }
+    this._hasInitiallyFocused = false;
     if (this.chart) {
       try {
-        this.chart.timeScale().applyOptions({
+        const scaleMargins = (this.chartMode === 'FOOTPRINT') 
+          ? { top: 0.06, bottom: 0.18 }
+          : { top: 0.06, bottom: 0.06 };
+        this.chart.priceScale('right').applyOptions({ autoScale: true, scaleMargins });
+        const timeScaleOpts = {
           minBarSpacing: this._getMinBarSpacingForTimeframe()
-        });
+        };
+        if (this.chartMode === 'TPO') {
+          timeScaleOpts.barSpacing = 16;
+          timeScaleOpts.rightOffset = 25;
+        } else if (this.chartMode === 'FOOTPRINT') {
+          timeScaleOpts.barSpacing = 85;
+          timeScaleOpts.rightOffset = 4;
+        } else {
+          timeScaleOpts.barSpacing = 14;
+          timeScaleOpts.rightOffset = 8;
+        }
+        this.chart.timeScale().applyOptions(timeScaleOpts);
       } catch (e) {}
     }
     this._updateCountdown();
@@ -1327,10 +1470,20 @@ export class ChartEngine {
       const ctx = liqCanvas.getContext('2d');
       ctx.clearRect(0, 0, liqCanvas.width, liqCanvas.height);
     }
+    this._hasInitiallyFocused = false;
     if (this.chart) {
       try {
-        this.chart.priceScale('right').applyOptions({ autoScale: true });
-        this.chart.timeScale().resetTimeScale();
+        const scaleMargins = (this.chartMode === 'FOOTPRINT') 
+          ? { top: 0.06, bottom: 0.18 }
+          : { top: 0.06, bottom: 0.06 };
+        this.chart.priceScale('right').applyOptions({ autoScale: true, scaleMargins });
+        if (this.chartMode === 'TPO') {
+          this.chart.timeScale().applyOptions({ barSpacing: 16, rightOffset: 25 });
+        } else if (this.chartMode === 'FOOTPRINT') {
+          this.chart.timeScale().applyOptions({ barSpacing: 85, rightOffset: 4 });
+        } else {
+          this.chart.timeScale().applyOptions({ barSpacing: 14, rightOffset: 8 });
+        }
       } catch (e) {}
     }
     if (this.overviewSeries) {
@@ -1406,23 +1559,46 @@ export class ChartEngine {
 
     if (this.chart) {
       try {
-        this.chart.priceScale('right').applyOptions({ autoScale: true });
+        const scaleMargins = (this.chartMode === 'FOOTPRINT') 
+          ? { top: 0.06, bottom: 0.18 }
+          : { top: 0.06, bottom: 0.06 };
+        this.chart.priceScale('right').applyOptions({ autoScale: true, scaleMargins });
+        const total = seriesData.length;
         if (this.chartMode === 'FOOTPRINT') {
-          const total = seriesData.length;
           if (total > 0 && !this._hasInitiallyFocused) {
             this._hasInitiallyFocused = true;
-            this.chart.timeScale().applyOptions({ barSpacing: 85, minBarSpacing: this._getMinBarSpacingForTimeframe() });
+            this.chart.timeScale().applyOptions({ barSpacing: 85, rightOffset: 4, minBarSpacing: this._getMinBarSpacingForTimeframe() });
             // Automatically focus on latest candles so footprints are immediately in full view
             this.chart.timeScale().setVisibleLogicalRange({
               from: Math.max(0, total - 14),
-              to: total + 1
+              to: total + 4
+            });
+          }
+        } else if (this.chartMode === 'TPO') {
+          if (total > 0 && !this._hasInitiallyFocused) {
+            this._hasInitiallyFocused = true;
+            this.chart.timeScale().applyOptions({
+              barSpacing: 16,
+              rightOffset: 25,
+              minBarSpacing: this._getMinBarSpacingForTimeframe()
+            });
+            this.chart.timeScale().setVisibleLogicalRange({
+              from: Math.max(0, total - 50),
+              to: total + 25
             });
           }
         } else {
-          if (!this._hasInitiallyFocused) {
+          if (total > 0 && !this._hasInitiallyFocused) {
             this._hasInitiallyFocused = true;
-            this.chart.timeScale().applyOptions({ minBarSpacing: this._getMinBarSpacingForTimeframe() });
-            this.chart.timeScale().fitContent();
+            this.chart.timeScale().applyOptions({
+              barSpacing: 14,
+              rightOffset: 8,
+              minBarSpacing: this._getMinBarSpacingForTimeframe()
+            });
+            this.chart.timeScale().setVisibleLogicalRange({
+              from: Math.max(0, total - 70),
+              to: total + 8
+            });
           }
         }
       } catch (e) {}
@@ -1656,45 +1832,66 @@ export class ChartEngine {
   }
 
   _renderSummaryTable() {
-    if (this.chartMode === 'CANDLESTICK') return;
+    if (!this.subPanes || !this.subPanes.deltaSummary) return;
     if (!this.tableDataContainer || this.candles.length === 0 || !this.chart) return;
 
     const timeScale = this.chart.timeScale();
     const width = this.container ? this.container.clientWidth : 800;
+    const barSpacing = timeScale.options().barSpacing || 105;
+    const colWidth = Math.max(52, Math.min(220, Math.floor(barSpacing * 0.88)));
 
-    // Only include visible candles in the summary table columns
-    const visible = this.candles.filter((c) => {
-      const tvTime = Math.floor(c.startTime / 1000);
-      const x = timeScale.timeToCoordinate(tvTime);
-      return x !== null && x >= -80 && x <= width + 80;
-    }).slice(-12); // Limit to latest visible columns for table neatness
+    const timeToX = (timeMs) => {
+      const tvTime = Math.floor(timeMs / 1000);
+      const coord = timeScale.timeToCoordinate(tvTime);
+      return coord !== null ? Math.floor(coord) : null;
+    };
 
-    if (visible.length === 0) return;
+    // Precalculate cumulative CVD monotonically across full candle series
+    let runningCvd = 0;
+    const cvdMap = new Map();
+    for (let i = 0; i < this.candles.length; i++) {
+      runningCvd += (this.candles[i].totalDelta || 0);
+      cvdMap.set(this.candles[i].startTime, runningCvd);
+    }
+
+    // Every candle visible in the viewport gets its numbers column directly beneath it
+    const visibleCols = [];
+    for (let i = 0; i < this.candles.length; i++) {
+      const candle = this.candles[i];
+      const x = timeToX(candle.startTime);
+      if (x !== null && x >= -colWidth && x <= width + colWidth) {
+        visibleCols.push({ candle, x });
+      }
+    }
+
+    if (visibleCols.length === 0) {
+      this.tableDataContainer.innerHTML = '';
+      return;
+    }
 
     let html = '';
-    let cumulativeCvd = 0;
+    const s = (this.currentSymbol || '').toUpperCase();
+    const isCrypto = s.includes('BTC') || s.includes('ETH');
+    const isGold = s.includes('XAU') || s.includes('GOLD');
+    const isJpy = s.includes('JPY');
+    const decimals = isCrypto || isGold ? 2 : (isJpy ? 3 : 5);
 
-    visible.forEach((candle) => {
-      cumulativeCvd += candle.totalDelta;
-
+    visibleCols.forEach(({ candle, x }) => {
       const isPosDelta = candle.totalDelta >= 0;
       const deltaPct = candle.totalVolume > 0 ? ((candle.totalDelta / candle.totalVolume) * 100).toFixed(1) : '0.0';
-      const s = (candle.symbol || this.currentSymbol || '').toUpperCase();
-      const isCrypto = s.includes('BTC') || s.includes('ETH') || candle.open > 1000;
-      const isGold = s.includes('XAU') || s.includes('GOLD');
-      const isJpy = s.includes('JPY');
-      const decimals = isCrypto || isGold ? 2 : (isJpy ? 3 : 5);
       const rangeVal = candle.high - candle.low;
       const hlRangeStr = isCrypto ? `${rangeVal.toFixed(1)} pts` : (isGold ? `$${rangeVal.toFixed(2)}` : (isJpy ? `${(rangeVal * 100).toFixed(1)} pips` : `${(rangeVal * 10000).toFixed(1)} pips`));
+      const colLeft = Math.round(x - colWidth / 2);
+      const sessionCvdVal = cvdMap.get(candle.startTime) || 0;
 
       html += `
-        <div class="tv-col">
+        <div class="tv-col" style="left: ${colLeft}px; width: ${colWidth}px;">
           <div class="tv-cell delta-row ${isPosDelta ? 'pos' : 'neg'}">${isPosDelta ? '+' : ''}${this._formatNum(candle.totalDelta)}</div>
           <div class="tv-cell">${this._formatNum(candle.maxDelta)}</div>
           <div class="tv-cell">${this._formatNum(candle.minDelta)}</div>
           <div class="tv-cell">${this._formatNum(candle.totalVolume)}</div>
           <div class="tv-cell">${deltaPct}%</div>
-          <div class="tv-cell">${this._formatNum(cumulativeCvd)}</div>
+          <div class="tv-cell">${this._formatNum(sessionCvdVal)}</div>
           <div class="tv-cell">${candle.pocPrice ? candle.pocPrice.toFixed(decimals) : '--'}</div>
           <div class="tv-cell">${hlRangeStr}</div>
         </div>
@@ -1756,26 +1953,23 @@ export class ChartEngine {
   }
 
   resize() {
-    const rowWrapper = document.getElementById('chartRowWrapper');
+    if (!this.container) return;
     const overviewPane = document.getElementById('overviewPane');
     const splitResizer = document.getElementById('splitResizer');
-    const totalW = rowWrapper ? rowWrapper.clientWidth : (this.container ? this.container.clientWidth : 800);
-    const totalH = rowWrapper ? rowWrapper.clientHeight : (this.container ? this.container.clientHeight : 500);
+    const rowWrapper = document.getElementById('chartRowWrapper');
 
-    if (this.layoutMode === 'SPLIT') {
-      const resizerW = (splitResizer && !splitResizer.classList.contains('hidden')) ? (splitResizer.offsetWidth || 6) : 6;
+    if (this.layoutMode === 'SPLIT' && overviewPane && splitResizer && rowWrapper) {
+      const totalW = rowWrapper.clientWidth || (this.container ? this.container.clientWidth : 800);
+      const totalH = rowWrapper.clientHeight || (this.container ? this.container.clientHeight : 500);
+      const resizerW = (!splitResizer.classList.contains('hidden')) ? (splitResizer.offsetWidth || 6) : 6;
       const availW = Math.max(320, totalW - resizerW);
       const overviewW = Math.max(160, Math.min(availW - 160, Math.floor(availW * this.splitRatio)));
       const mainW = Math.max(160, availW - overviewW);
 
-      if (overviewPane) {
-        overviewPane.style.flex = `0 0 ${overviewW}px`;
-        overviewPane.style.width = `${overviewW}px`;
-      }
-      if (this.container) {
-        this.container.style.flex = '1 1 0';
-        this.container.style.width = `${mainW}px`;
-      }
+      overviewPane.style.flex = `0 0 ${overviewW}px`;
+      overviewPane.style.width = `${overviewW}px`;
+      this.container.style.flex = '1 1 0';
+      this.container.style.width = `${mainW}px`;
 
       if (this.overviewChart && overviewW > 0 && totalH > 0) {
         this.overviewChart.applyOptions({ width: overviewW, height: totalH });
@@ -1784,23 +1978,19 @@ export class ChartEngine {
         this.chart.applyOptions({ width: mainW, height: totalH });
       }
     } else {
-      if (overviewPane) {
-        overviewPane.style.flex = '';
-        overviewPane.style.width = '';
-      }
-      if (this.container) {
-        this.container.style.flex = '1 1 0';
-        this.container.style.width = '100%';
-      }
-      if (this.chart && totalW > 0 && totalH > 0) {
-        this.chart.applyOptions({ width: totalW, height: totalH });
+      const rect = this.container.getBoundingClientRect();
+      const width = Math.floor(rect.width || this.container.clientWidth || 800);
+      const height = Math.floor(rect.height || this.container.clientHeight || 500);
+
+      if (this.chart && width > 0 && height > 0) {
+        this.chart.applyOptions({ width, height });
       }
     }
 
     if (this.cvdChart && this.cvdContainer) {
       const rect = this.cvdContainer.getBoundingClientRect();
-      const w = (rect && rect.width > 0) ? rect.width : (this.cvdContainer.clientWidth || totalW);
-      const h = (rect && rect.height > 0) ? rect.height : (this.cvdContainer.clientHeight || 100);
+      const w = Math.floor((rect && rect.width > 0) ? rect.width : (this.cvdContainer.clientWidth || 800));
+      const h = Math.floor((rect && rect.height > 0) ? rect.height : (this.cvdContainer.clientHeight || 100));
       if (w > 0 && h > 0) {
         this.cvdChart.applyOptions({ width: w, height: h });
       }
@@ -1812,35 +2002,88 @@ export class ChartEngine {
     this._updateLiveTracker();
   }
 
+  destroy() {
+    if (this._countdownInterval) {
+      clearInterval(this._countdownInterval);
+      this._countdownInterval = null;
+    }
+    if (this._summaryTableRaf) {
+      cancelAnimationFrame(this._summaryTableRaf);
+      this._summaryTableRaf = null;
+    }
+    if (Array.isArray(this._cleanups)) {
+      this._cleanups.forEach(fn => {
+        try { if (typeof fn === 'function') fn(); } catch (e) {}
+      });
+      this._cleanups = [];
+    }
+    if (this.chart) {
+      try {
+        this.chart.remove();
+      } catch (e) {}
+      this.chart = null;
+    }
+    if (this.cvdChart) {
+      try {
+        this.cvdChart.remove();
+      } catch (e) {}
+      this.cvdChart = null;
+    }
+    if (this.overviewChart) {
+      try {
+        this.overviewChart.remove();
+      } catch (e) {}
+      this.overviewChart = null;
+    }
+    if (this.liveTrackerOverlay && this.liveTrackerOverlay.parentNode) {
+      this.liveTrackerOverlay.parentNode.removeChild(this.liveTrackerOverlay);
+      this.liveTrackerOverlay = null;
+    }
+    if (this.bigTradeTooltipEl && this.bigTradeTooltipEl.parentNode) {
+      this.bigTradeTooltipEl.parentNode.removeChild(this.bigTradeTooltipEl);
+      this.bigTradeTooltipEl = null;
+    }
+    if (this.tpoHoverTooltipEl && this.tpoHoverTooltipEl.parentNode) {
+      this.tpoHoverTooltipEl.parentNode.removeChild(this.tpoHoverTooltipEl);
+      this.tpoHoverTooltipEl = null;
+    }
+    if (this.tpoInspectorEl && this.tpoInspectorEl.parentNode) {
+      this.tpoInspectorEl.parentNode.removeChild(this.tpoInspectorEl);
+      this.tpoInspectorEl = null;
+    }
+    this.candles = [];
+    this.tpoSessions = [];
+    this.activeCandle = null;
+  }
+
   _initLiveTrackerOverlay() {
     if (!this.container) return;
-    let overlay = document.getElementById('livePriceTrackerOverlay');
+    let overlay = this.container.querySelector('.tv-live-price-tracker-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
-      overlay.id = 'livePriceTrackerOverlay';
       overlay.className = 'tv-live-price-tracker-overlay';
       overlay.innerHTML = `
-        <div class="tv-live-price-line" id="livePriceLine"></div>
-        <div class="tv-live-symbol-pill" id="liveSymbolPill">EURUSD</div>
-        <div class="tv-live-price-badge" id="livePriceBadge">
-          <div class="live-price-num" id="livePriceNum">--</div>
-          <div class="live-price-timer" id="livePriceTimer">00:00</div>
+        <div class="tv-live-price-line"></div>
+        <div class="tv-live-symbol-pill">EURUSD</div>
+        <div class="tv-live-price-badge">
+          <div class="live-price-num">--</div>
+          <div class="live-price-timer">00:00</div>
         </div>
-        <div class="tv-timezone-badge" id="chartTimezoneBadge" title="Click to toggle 12h / 24h format">
+        <div class="tv-timezone-badge" title="Click to toggle 12h / 24h format">
           <span>UTC+5:30 (Kolkata)</span>
-          <span class="time-format-pill" id="timeFormatPill">${this.timeFormat}</span>
+          <span class="time-format-pill">${this.timeFormat}</span>
         </div>
       `;
       this.container.appendChild(overlay);
     }
     this.liveTrackerOverlay = overlay;
-    this.livePriceLine = document.getElementById('livePriceLine');
-    this.liveSymbolPill = document.getElementById('liveSymbolPill');
-    this.livePriceBadge = document.getElementById('livePriceBadge');
-    this.livePriceNum = document.getElementById('livePriceNum');
-    this.livePriceTimer = document.getElementById('livePriceTimer');
+    this.livePriceLine = overlay.querySelector('.tv-live-price-line');
+    this.liveSymbolPill = overlay.querySelector('.tv-live-symbol-pill');
+    this.livePriceBadge = overlay.querySelector('.tv-live-price-badge');
+    this.livePriceNum = overlay.querySelector('.live-price-num');
+    this.livePriceTimer = overlay.querySelector('.live-price-timer');
 
-    const tzBadge = document.getElementById('chartTimezoneBadge');
+    const tzBadge = overlay.querySelector('.tv-timezone-badge');
     if (tzBadge && !tzBadge._hasBoundToggle) {
       tzBadge._hasBoundToggle = true;
       tzBadge.addEventListener('click', (e) => {

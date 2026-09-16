@@ -80,27 +80,30 @@ def get_tick_size_for_symbol(symbol):
     return 0.00005 # 0.5 pip for pristine Forex footprint ladders
 
 def get_adaptive_tick_size(symbol, high_p, low_p, timeframe="1m"):
-    base_tick = get_tick_size_for_symbol(symbol)
-    tf_multipliers = {
-        "1m": 1,
-        "5m": 2,
-        "15m": 4,
-        "30m": 6,
-        "1h": 10,
-        "4h": 20,
-        "1d": 50,
-        "d": 50
-    }
-    mult = tf_multipliers.get(str(timeframe).lower(), 1)
-    tick_size = base_tick * mult
+    s = (symbol or "").upper()
+    candle_range = max(high_p - low_p, 0.00001)
 
-    # Keep row count bounded cleanly between 10 and 22 levels per candle
-    candle_range = max(high_p - low_p, tick_size)
-    if candle_range / tick_size > 22:
-        factor = math.ceil((candle_range / 18) / base_tick)
-        tick_size = base_tick * max(mult, factor)
+    if "BTC" in s or high_p > 10000:
+        allowed_steps = [1, 2, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 250, 500]
+        decimals = 2
+    elif "ETH" in s or high_p > 1000:
+        allowed_steps = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+        decimals = 2
+    elif "XAU" in s or "GOLD" in s or high_p > 500:
+        allowed_steps = [0.05, 0.10, 0.20, 0.25, 0.50, 1.0, 2.0, 5.0]
+        decimals = 2
+    elif "JPY" in s:
+        allowed_steps = [0.001, 0.002, 0.003, 0.005, 0.010, 0.020, 0.050, 0.100]
+        decimals = 3
+    else:
+        # Forex (EUR/USD, GBP/USD, etc.): 0.1 pip to 2 pips
+        allowed_steps = [0.00001, 0.00002, 0.00003, 0.00004, 0.00005, 0.00008, 0.00010, 0.00015, 0.00020]
+        decimals = 5
 
-    return tick_size
+    target_levels = 7
+    raw_step = candle_range / target_levels
+    tick_size = min(allowed_steps, key=lambda x: abs(x - raw_step))
+    return round(tick_size, decimals)
 
 def get_volume_scale_for_symbol(symbol):
     s = symbol.upper()
@@ -119,11 +122,8 @@ def synthesize_footprint_cells(symbol, open_p, high_p, low_p, close_p, volume, t
     min_p = round(low_p / tick_size) * tick_size
     max_p = round(high_p / tick_size) * tick_size
     
-    levels = []
-    p = min_p
-    while p <= max_p + (tick_size * 0.1):
-        levels.append(round(p, decimals))
-        p += tick_size
+    steps = max(1, int(round((max_p - min_p) / tick_size)))
+    levels = [round(min_p + i * tick_size, decimals) for i in range(steps + 1)]
         
     if not levels:
         levels = [round(close_p, decimals)]
@@ -281,6 +281,8 @@ def sync_and_load_candles(mt5_symbol, ui_symbol, count=1000, timeframe="1m", bef
                     "provenance": "RECONSTRUCTED_HISTORICAL_FOOTPRINT"
                 })
             save_candles_bulk(batch, timeframe)
+            if batch:
+                return batch
 
     # Load from persistent SQLite database
     persisted = load_candles(ui_symbol, timeframe, limit=count, before_ts=before_ts)
@@ -341,6 +343,15 @@ async def handle_client(websocket, path=None):
     last_sim_tick_time = time.time()
     current_bar_minute = int(time.time()) // 60
 
+    active_subscriptions = {
+        active_ui_symbol: {
+            "ui_symbol": active_ui_symbol,
+            "mt5_symbol": mt5_symbol,
+            "timeframe": active_timeframe,
+            "last_tick_time": last_tick_time
+        }
+    }
+
     # Load 2000 persistent historical candles on connect for deep context
     initial_candles = sync_and_load_candles(mt5_symbol, active_ui_symbol, 2000, active_timeframe)
     if initial_candles:
@@ -370,7 +381,7 @@ async def handle_client(websocket, path=None):
         print(f"[MT5 Bridge] Error generating initial liquidation heatmap: {e}")
 
     async def receive_messages():
-        nonlocal active_ui_symbol, mt5_symbol, active_timeframe, last_tick_time, last_known_bid, last_known_ask, last_sim_tick_time
+        nonlocal active_ui_symbol, mt5_symbol, active_timeframe, last_tick_time, last_known_bid, last_known_ask, last_sim_tick_time, active_subscriptions
         try:
             async for message in websocket:
                 try:
@@ -380,10 +391,10 @@ async def handle_client(websocket, path=None):
                     if action == "subscribe" and data.get("symbol"):
                         new_ui_symbol = data.get("symbol")
                         new_mt5_symbol = find_mt5_symbol(new_ui_symbol)
+                        new_tf = data.get("timeframe", active_timeframe)
                         active_ui_symbol = new_ui_symbol
                         mt5_symbol = new_mt5_symbol
-                        if data.get("timeframe"):
-                            active_timeframe = data.get("timeframe")
+                        active_timeframe = new_tf
                         
                         last_tick_time = 0
                         last_known_bid = 0.0
@@ -396,7 +407,14 @@ async def handle_client(websocket, path=None):
                             last_known_ask = fresh_tick.ask
                             last_tick_time = fresh_tick.time_msc
 
-                        print(f"[MT5 Bridge] Switched subscription to '{active_ui_symbol}' ({active_timeframe}) -> MT5 '{mt5_symbol}'")
+                        active_subscriptions[new_ui_symbol] = {
+                            "ui_symbol": new_ui_symbol,
+                            "mt5_symbol": new_mt5_symbol,
+                            "timeframe": new_tf,
+                            "last_tick_time": last_tick_time
+                        }
+
+                        print(f"[MT5 Bridge] Added subscription to '{active_ui_symbol}' ({active_timeframe}) -> MT5 '{mt5_symbol}' (Total: {len(active_subscriptions)})")
                         
                         # Load 2000 persistent historical candles for switched symbol & timeframe
                         fresh_candles = sync_and_load_candles(mt5_symbol, active_ui_symbol, 2000, active_timeframe)
@@ -425,10 +443,17 @@ async def handle_client(websocket, path=None):
                         except Exception as ex:
                             print(f"[MT5 Bridge] Error generating heatmap for switched symbol: {ex}")
 
+                    elif action == "unsubscribe" and data.get("symbol"):
+                        unsub_sym = data.get("symbol")
+                        active_subscriptions.pop(unsub_sym, None)
+                        print(f"[MT5 Bridge] Unsubscribed from '{unsub_sym}' (Remaining: {len(active_subscriptions)})")
+
                     elif action == "set_timeframe":
                         new_tf = data.get("timeframe", "1m")
                         if new_tf in MT5_TIMEFRAMES:
                             active_timeframe = new_tf
+                            if active_ui_symbol in active_subscriptions:
+                                active_subscriptions[active_ui_symbol]["timeframe"] = new_tf
                             fresh_candles = sync_and_load_candles(mt5_symbol, active_ui_symbol, 2000, active_timeframe)
                             if fresh_candles:
                                 await send_candles_in_safe_chunks(websocket, active_ui_symbol, active_timeframe, fresh_candles, chunk_size=350)
@@ -473,39 +498,57 @@ async def handle_client(websocket, path=None):
 
     try:
         while True:
-            tick = mt5.symbol_info_tick(mt5_symbol)
-            got_live_tick = False
-            
-            if tick and tick.time_msc != last_tick_time and tick.bid > 0:
-                last_tick_time = tick.time_msc
-                last_known_bid = tick.bid
-                last_known_ask = tick.ask
-                got_live_tick = True
-                
-                payload = {
-                    "type": "tick",
-                    "symbol": active_ui_symbol,
-                    "timestamp": tick.time_msc,
-                    "bid": tick.bid,
-                    "ask": tick.ask,
-                    "price": round((tick.bid + tick.ask) / 2, 5 if tick.bid < 500 else 2),
-                    "volume": (tick.volume if tick.volume > 0 else 1) * 2500,
-                    "source": "MT5_LIVE"
-                }
-                await websocket.send(json.dumps(payload))
+            subs_list = list(active_subscriptions.values())
+            if not subs_list and mt5_symbol:
+                subs_list = [{
+                    "ui_symbol": active_ui_symbol,
+                    "mt5_symbol": mt5_symbol,
+                    "timeframe": active_timeframe,
+                    "last_tick_time": last_tick_time
+                }]
 
-                # Process live tick in liquidation engine (sweeps + dynamic accumulation)
-                sweep_evt = liquidation_engine.process_live_tick(active_ui_symbol, payload["price"], payload["volume"])
-                if sweep_evt:
-                    await websocket.send(json.dumps(sweep_evt))
+            for sub in subs_list:
+                s_sym = sub.get("mt5_symbol")
+                u_sym = sub.get("ui_symbol")
+                if not s_sym or not u_sym:
+                    continue
+                tick = mt5.symbol_info_tick(s_sym)
+                if tick and tick.time_msc != sub.get("last_tick_time", 0) and tick.bid > 0:
+                    sub["last_tick_time"] = tick.time_msc
+                    if u_sym in active_subscriptions:
+                        active_subscriptions[u_sym]["last_tick_time"] = tick.time_msc
+
+                    scale = get_volume_scale_for_symbol(u_sym)
+                    vol_mult = tick.volume if (tick.volume and tick.volume > 0) else 1
+                    payload = {
+                        "type": "tick",
+                        "symbol": u_sym,
+                        "timestamp": tick.time_msc,
+                        "bid": tick.bid,
+                        "ask": tick.ask,
+                        "price": round((tick.bid + tick.ask) / 2, 5 if tick.bid < 500 else 2),
+                        "volume": int(vol_mult * scale),
+                        "source": "MT5_LIVE"
+                    }
+                    await websocket.send(json.dumps(payload))
+
+                    sweep_evt = liquidation_engine.process_live_tick(u_sym, payload["price"], payload["volume"])
+                    if sweep_evt:
+                        await websocket.send(json.dumps(sweep_evt))
 
             # Check minute rollover to commit finalized bar to SQLite
             now_minute = int(time.time()) // 60
             if now_minute > current_bar_minute:
                 current_bar_minute = now_minute
-                # Sync last bar to SQLite
-                sync_and_load_candles(mt5_symbol, active_ui_symbol, 2, active_timeframe)
-            # No synthetic fallback ticks: never simulate fake data when real market is closed
+                for sub in subs_list:
+                    s_sym = sub.get("mt5_symbol")
+                    u_sym = sub.get("ui_symbol")
+                    s_tf = sub.get("timeframe", "1m")
+                    if s_sym and u_sym:
+                        sync_and_load_candles(s_sym, u_sym, 2, s_tf)
+                        if s_tf != "1m":
+                            sync_and_load_candles(s_sym, u_sym, 2, "1m")
+
             await asyncio.sleep(0.05)
 
     except websockets.exceptions.ConnectionClosed:

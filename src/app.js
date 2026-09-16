@@ -1,9 +1,12 @@
 /**
  * app.js
  * Main Application Orchestrator for Depthflow Platform.
+ * Multi-Panel Chart Workspace & MT5 Live Stream Architecture.
  */
 
 import { ProviderRegistry } from './data/ProviderRegistry.js';
+import { MarketDataManager } from './workspace/MarketDataManager.js';
+import { WorkspaceManager, WorkspaceLayout } from './workspace/WorkspaceManager.js';
 import { ChartEngine } from './chart/ChartEngine.js?v=orderflow_v5';
 import { VolumeProfileEngine } from './analytics/VolumeProfileEngine.js?v=orderflow_v5';
 import { VolumeProfileRenderer } from './chart/VolumeProfileRenderer.js?v=orderflow_v5';
@@ -11,7 +14,7 @@ import { DeltaEngine } from './analytics/DeltaEngine.js?v=orderflow_v5';
 import { AdaptiveClassifier } from './analytics/AdaptiveClassifier.js?v=orderflow_v5';
 import { FootprintAggregator } from './analytics/FootprintAggregator.js?v=orderflow_v5';
 import { PatternDetector } from './analytics/PatternDetector.js?v=orderflow_v5';
-import { BigTradesEngine, DetectionMethod, BigTradeEventType } from './analytics/BigTradesEngine.js?v=orderflow_v5';
+import { BigTradesEngine } from './analytics/BigTradesEngine.js?v=orderflow_v5';
 import { TPOEngine } from './analytics/TPOEngine.js?v=orderflow_v5';
 import { ReplayEngine } from './data/ReplayEngine.js?v=orderflow_v5';
 import { DiagnosticsDrawer } from './ui/DiagnosticsDrawer.js?v=orderflow_v5';
@@ -21,21 +24,15 @@ import { defaultConfig } from './analytics/OrderFlowConfig.js';
 class DepthflowApp {
   constructor() {
     this.registry = new ProviderRegistry();
-    this.chartEngine = null;
-    this.profileEngine = new VolumeProfileEngine();
-    this.profileRenderer = null;
-    this.deltaEngine = new DeltaEngine();
-    this.classifier = new AdaptiveClassifier();
-    this.bigTradesEngine = new BigTradesEngine();
-    this.bigTradesVisible = true;
-    this.tpoEngine = new TPOEngine();
+    this.marketDataManager = new MarketDataManager(this.registry);
+    this.workspaceManager = null;
     this.tpoSettingsModal = null;
-    this._lastTpoUpdate = 0;
+    this.diagnosticsDrawer = new DiagnosticsDrawer();
+    this.replayEngine = null;
+    this.patternDetector = new PatternDetector(defaultConfig);
 
-    const symSelect = document.getElementById('symbolSelect');
-    this.currentSymbol = (symSelect && symSelect.value) ? symSelect.value : 'EUR/USD';
-    this.currentTimeframeMs = 60000;
-    this.currentTimeframeStr = '1m';
+    this.bigTradesVisible = true;
+    this.theme = 'DARK';
 
     this.watchlistBaseline = {
       'EUR/USD': 1.08500,
@@ -46,123 +43,285 @@ class DepthflowApp {
       'ETH/USD': 3450.20
     };
 
-    this.aggregator = new FootprintAggregator({ timeframeMs: 60000, symbol: this.currentSymbol });
-    this.patternDetector = new PatternDetector(defaultConfig);
-    this.replayEngine = null;
-    this.diagnosticsDrawer = new DiagnosticsDrawer();
-    this.raw1mCandles = [];
-
     this._initUI();
   }
 
+  get chartEngine() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.chartEngine : null;
+  }
+
+  get currentSymbol() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.symbol : 'EUR/USD';
+  }
+
+  get currentTimeframeStr() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.timeframeStr : '1m';
+  }
+
+  get currentTimeframeMs() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.timeframeMs : 60000;
+  }
+
+  get aggregator() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.aggregator : null;
+  }
+
+  get tpoEngine() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.tpoEngine : null;
+  }
+
+  get bigTradesEngine() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.bigTradesEngine : null;
+  }
+
+  get deltaEngine() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.deltaEngine : null;
+  }
+
+  get profileEngine() {
+    const p = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    return p ? p.profileEngine : null;
+  }
+
   async _initUI() {
-    console.log('[DepthflowApp] Initializing MT5 Live Footprint Engine...');
+    console.log('[DepthflowApp] Initializing Multi-Panel Workspace & MT5 Live Stream...');
 
-    // Init Canvas Chart Engine
-    this.chartEngine = new ChartEngine('mainChartArea', 'cvdChartArea');
-    this.chartEngine.setSymbol(this.currentSymbol);
-    this.chartEngine.setTimeframe(this.currentTimeframeMs, this.currentTimeframeStr);
+    // 1. Initialize Workspace Manager
+    this.workspaceManager = new WorkspaceManager({
+      container: 'workspaceRoot',
+      marketDataManager: this.marketDataManager,
+      onActivePanelChange: (activePanel) => this._syncActivePanelToHUD(activePanel),
+      onActivePanelCvdChange: (action, payload) => this._handleActivePanelCvd(action, payload)
+    });
 
-    // Init Volume Profile Renderer
-    const vpCanvas = document.getElementById('volumeProfileCanvas');
-    if (vpCanvas) {
-      this.profileRenderer = new VolumeProfileRenderer(vpCanvas);
-    }
+    // 2. Initialize CVD Chart in lower sub-pane
+    this._initCvdChart();
 
-    // Init Replay Engine
+    // 3. Initialize Replay Engine
     this.replayEngine = new ReplayEngine({
-      onTick: (event) => this._processMarketEvent(event),
+      onTick: (event) => this.marketDataManager._handleIncomingMarketEvent(event),
       onStateChange: (state) => this._updateReplayUI(state)
     });
 
-    // Init TPO & Market Profile Settings Modal
+    // 4. Initialize TPO Settings Modal
     this.tpoSettingsModal = new TPOSettingsModal({
       onSettingsChange: (settings) => {
-        if (this.tpoEngine) {
-          this.tpoEngine.setOptions({
-            bracketMinutes: settings.bracketMinutes,
-            valueAreaPercent: settings.valueAreaPercent,
-            ibPeriods: settings.ibDuration === 30 ? 1 : 2,
-            sessionMode: settings.sessionMode || 'INSTITUTIONAL',
-            ticksPerBlock: settings.ticksPerBlock || 1
-          });
-          const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
-          if (this.chartEngine) {
-            this.chartEngine.setTpoSessions(sessions);
-          }
-        }
-        if (this.chartEngine) {
-          this.chartEngine.setTpoOptions(settings);
+        if (this.workspaceManager) {
+          this.workspaceManager.setTpoSettings(settings);
         }
       }
     });
 
-    // Apply initial TPO settings to engines
+    // Apply initial TPO settings to workspace
     const initialTpoSettings = this.tpoSettingsModal.getSettings();
-    this.tpoEngine.setOptions({
-      bracketMinutes: initialTpoSettings.bracketMinutes,
-      valueAreaPercent: initialTpoSettings.valueAreaPercent,
-      ibPeriods: initialTpoSettings.ibDuration === 30 ? 1 : 2,
-      sessionMode: initialTpoSettings.sessionMode || 'INSTITUTIONAL',
-      ticksPerBlock: initialTpoSettings.ticksPerBlock || 1
-    });
-    this.chartEngine.setTpoOptions(initialTpoSettings);
+    this.workspaceManager.tpoSettings = initialTpoSettings;
 
-    // Bind Event Listeners
+    // 5. Initialize workspace panels from storage or default
+    this.workspaceManager.init();
+
+    // 6. Bind HUD Controls
     this._bindControls();
 
-    // Register Data Event Stream
-    this.registry.onEvent((event) => this._processMarketEvent(event));
-    this.registry.onCandles((candles) => this._processInitialCandles(candles));
-    this.registry.onHistoricalChunk((candles) => this._processHistoricalChunk(candles));
-    this.registry.onTpoCandles((candles) => this._handleTpo1mCandles(candles));
-    this.registry.onLiquidationHeatmap((data) => {
-      if (this.chartEngine) this.chartEngine.setLiquidationData(data);
+    // 7. Register data listeners for global widgets (watchlist, diagnostics, status)
+    this.registry.onEvent((event) => {
+      this._updateWatchlist(event.symbol, event.price);
+      this.diagnosticsDrawer.recordTick();
     });
-    this.registry.onLiquidationSweep((data) => {
-      if (this.chartEngine) this.chartEngine.triggerLiquidationSweep(data);
-    });
+
     this.registry.onStatusChange((statusInfo) => this._updateStatusUI(statusInfo));
 
-    // Setup backward scroll pagination listener
-    this._setupScrollPagination();
+    // 8. Activate MT5 Bridge as Default Feed Provider
+    const activePanel = this.workspaceManager.getActivePanel();
+    const initSymbol = activePanel ? activePanel.symbol : 'EUR/USD';
+    const initTf = activePanel ? activePanel.timeframeStr : '1m';
+    await this.registry.setActiveProvider('MT5Adapter', initSymbol, initTf);
 
-    // Activate MT5 Bridge as Default Feed Provider
-    await this.registry.setActiveProvider('MT5Adapter', this.currentSymbol);
+    // Initial HUD sync
+    this._syncActivePanelToHUD(activePanel);
 
     // Window Resize Handler
     window.addEventListener('resize', () => {
-      if (this.chartEngine) this.chartEngine.resize();
-    });
-
-    console.log('[DepthflowApp] MT5 live bridge active.');
-  }
-
-  _setupScrollPagination() {
-    let isFetchingHistory = false;
-    const checkScroll = () => {
-      if (!this.chartEngine || !this.chartEngine.chart || isFetchingHistory) return;
-      const logicalRange = this.chartEngine.chart.timeScale().getVisibleLogicalRange();
-      if (logicalRange && logicalRange.from < 15) {
-        const allCandles = this.aggregator.getAllCandles();
-        if (allCandles.length > 0) {
-          isFetchingHistory = true;
-          const earliestTs = allCandles[0].startTime;
-          this.registry.loadMoreHistory(earliestTs, 400);
-          setTimeout(() => { isFetchingHistory = false; }, 800);
+      if (this.workspaceManager) this.workspaceManager.resize();
+      if (this.cvdChart) {
+        const cvdContainer = document.getElementById('cvdChartArea');
+        if (cvdContainer) {
+          const rect = cvdContainer.getBoundingClientRect();
+          this.cvdChart.applyOptions({
+            width: rect.width || cvdContainer.clientWidth || 800,
+            height: rect.height || cvdContainer.clientHeight || 90
+          });
         }
       }
-    };
+    });
 
-    if (this.chartEngine && this.chartEngine.chart) {
-      this.chartEngine.chart.timeScale().subscribeVisibleLogicalRangeChange(checkScroll);
-    } else {
-      setTimeout(() => this._setupScrollPagination(), 500);
+    console.log('[DepthflowApp] Multi-Panel Workspace active.');
+  }
+
+  _initCvdChart() {
+    const cvdContainer = document.getElementById('cvdChartArea');
+    if (!cvdContainer || cvdContainer.offsetParent === null || typeof window.LightweightCharts === 'undefined') {
+      return;
+    }
+
+    if (this.cvdChart) return;
+
+    const { createChart } = window.LightweightCharts;
+    const rect = cvdContainer.getBoundingClientRect();
+    const w = rect.width > 0 ? rect.width : cvdContainer.clientWidth || 800;
+    const h = rect.height > 0 ? rect.height : cvdContainer.clientHeight || 90;
+
+    this.cvdChart = createChart(cvdContainer, {
+      width: w,
+      height: h,
+      layout: {
+        background: { color: '#161c24' },
+        textColor: '#808a9d'
+      },
+      grid: {
+        vertLines: { color: '#1e2632' },
+        horzLines: { color: '#1e2632' }
+      },
+      rightPriceScale: {
+        borderColor: '#2a3442',
+        autoScale: true
+      },
+      timeScale: {
+        visible: false
+      }
+    });
+
+    this.cvdSeries = this.cvdChart.addLineSeries({
+      color: '#00e5ff',
+      lineWidth: 2,
+      priceLineVisible: false
+    });
+  }
+
+  _handleActivePanelCvd(action, payload) {
+    if (!this.cvdSeries) return;
+    const mainPanelId = this.workspaceManager ? this.workspaceManager.getMainPanelId() : null;
+    if (payload.panelId && mainPanelId && payload.panelId !== mainPanelId) {
+      return; // Strictly ignore secondary panel updates to keep CVD locked to Main Panel
+    }
+
+    if (action === 'cvdLoaded') {
+      try {
+        this.cvdSeries.setData(payload.records || []);
+        if (this.cvdChart) this.cvdChart.timeScale().fitContent();
+      } catch (e) {}
+      this._updateCvdBadge(payload.lastCvd || 0);
+    } else if (action === 'cvdUpdate') {
+      try {
+        this.cvdSeries.update({
+          time: payload.time,
+          value: payload.value
+        });
+      } catch (e) {}
+      this._updateCvdBadge(payload.value);
+    }
+  }
+
+  _updateCvdBadge(cvdVal) {
+    const cvdEl = document.getElementById('cvdVal');
+    if (cvdEl && cvdVal !== undefined && cvdVal !== null) {
+      const isPos = cvdVal >= 0;
+      cvdEl.textContent = `${isPos ? '+' : ''}${Math.round(cvdVal)}`;
+      cvdEl.style.color = isPos ? '#089981' : '#F23645';
+    }
+  }
+
+  _syncActivePanelToHUD(activePanel) {
+    if (!activePanel) return;
+
+    // Symbol dropdown
+    const symSelect = document.getElementById('symbolSelect');
+    if (symSelect && symSelect.value !== activePanel.symbol) {
+      symSelect.value = activePanel.symbol;
+    }
+
+    // Watchlist row highlight
+    document.querySelectorAll('.wl-row').forEach(r => {
+      if (r.getAttribute('data-symbol') === activePanel.symbol) {
+        r.classList.add('active');
+      } else {
+        r.classList.remove('active');
+      }
+    });
+
+    // Timeframe buttons
+    document.querySelectorAll('.tf-btn').forEach(btn => {
+      const btnTf = btn.getAttribute('data-label') || btn.textContent.trim();
+      btn.classList.toggle('active', btnTf === activePanel.timeframeStr);
+    });
+
+    // Chart Mode Select
+    const chartModeSelect = document.getElementById('chartModeSelect');
+    if (chartModeSelect && chartModeSelect.value !== activePanel.chartMode) {
+      chartModeSelect.value = activePanel.chartMode;
+    }
+
+    // TPO Quick Button
+    const tpoQuickBtn = document.getElementById('tpoQuickBtn');
+    if (tpoQuickBtn) {
+      tpoQuickBtn.classList.toggle('active', activePanel.chartMode === 'TPO');
+    }
+
+    // Footprint Style Container
+    const styleContainer = document.getElementById('footprintStyleContainer');
+    if (styleContainer) {
+      styleContainer.style.display = (activePanel.chartMode === 'FOOTPRINT') ? 'flex' : 'none';
+    }
+
+    const styleSelect = document.getElementById('footprintStyleSelect');
+    if (styleSelect && styleSelect.value !== activePanel.footprintStyle) {
+      styleSelect.value = activePanel.footprintStyle;
+    }
+
+    // Layout buttons active state
+    if (this.workspaceManager) {
+      const layout = this.workspaceManager.layout;
+      document.querySelectorAll('#workspaceLayoutGroup .layout-btn-pill').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-layout') === layout);
+      });
+    }
+
+    // Live Price in Header
+    if (activePanel.aggregator) {
+      const candles = activePanel.aggregator.getAllCandles();
+      if (candles.length > 0) {
+        const lastC = candles[candles.length - 1];
+        const headerPrice = document.getElementById('headerLivePrice');
+        if (headerPrice) {
+          const isCrypto = activePanel.symbol.includes('BTC') || activePanel.symbol.includes('ETH');
+          const isGold = activePanel.symbol.includes('XAU') || activePanel.symbol.includes('GOLD');
+          const isJpy = activePanel.symbol.includes('JPY');
+          const decimals = isCrypto || isGold ? 2 : (isJpy ? 3 : 5);
+          headerPrice.textContent = Number(lastC.close).toFixed(decimals);
+        }
+      }
+    }
+
+    // Sync CVD chart exclusively to Main Panel
+    const mainPanel = this.workspaceManager ? this.workspaceManager.getMainPanel() : null;
+    if (mainPanel && mainPanel.cvdRecords && this.cvdSeries) {
+      try {
+        this.cvdSeries.setData(mainPanel.cvdRecords);
+        if (this.cvdChart) this.cvdChart.timeScale().fitContent();
+      } catch (e) {}
+      this._updateCvdBadge(mainPanel.lastCvd || 0);
     }
   }
 
   _bindControls() {
-    // Symbol Select
+    // 1. Symbol Select in HUD
     const symbolSelect = document.getElementById('symbolSelect');
     if (symbolSelect) {
       symbolSelect.addEventListener('change', async (e) => {
@@ -170,18 +329,18 @@ class DepthflowApp {
       });
     }
 
-    // TradingView Watchlist Row Clicks
+    // 2. Watchlist Row Clicks
     const wlRows = document.querySelectorAll('.wl-row');
     wlRows.forEach(row => {
       row.addEventListener('click', async () => {
         const sym = row.getAttribute('data-symbol');
-        if (sym && sym !== this.currentSymbol) {
+        if (sym) {
           await this.switchSymbol(sym);
         }
       });
     });
 
-    // Timeframe Buttons (1m, 5m, 15m, 30m, 1h, 4h, D)
+    // 3. Timeframe Buttons
     const tfBtns = document.querySelectorAll('.tf-btn');
     const tfMap = {
       '60000': '1m',
@@ -194,94 +353,78 @@ class DepthflowApp {
     };
 
     tfBtns.forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        tfBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
+      btn.addEventListener('click', () => {
         const tfMs = parseInt(btn.getAttribute('data-tf'));
         const tfStr = btn.getAttribute('data-label') || tfMap[tfMs.toString()] || '1m';
         this.setTimeframe(tfMs, tfStr);
       });
     });
 
-    // Chart View Mode (Footprint vs TPO vs Normal Candlestick)
+    // 4. Chart View Mode
     const chartModeSelect = document.getElementById('chartModeSelect');
     const tpoQuickBtn = document.getElementById('tpoQuickBtn');
-    const styleContainer = document.getElementById('footprintStyleContainer');
-
-    const updateChartModeUI = (mode) => {
-      if (styleContainer) {
-        styleContainer.style.display = (mode === 'CANDLESTICK' || mode === 'TPO') ? 'none' : 'flex';
-      }
-      if (tpoQuickBtn) {
-        tpoQuickBtn.classList.toggle('active', mode === 'TPO');
-      }
-      if (chartModeSelect && chartModeSelect.value !== mode) {
-        chartModeSelect.value = mode;
-      }
-      if (this.chartEngine) {
-        if (mode === 'TPO' && this.tpoEngine) {
-          const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
-          this.chartEngine.setTpoSessions(sessions);
-        }
-        this.chartEngine.setChartMode(mode);
-      }
-    };
 
     if (chartModeSelect) {
       chartModeSelect.addEventListener('change', (e) => {
-        updateChartModeUI(e.target.value);
+        this.setChartMode(e.target.value);
       });
-      if (chartModeSelect.value && chartModeSelect.value !== 'FOOTPRINT') {
-        updateChartModeUI(chartModeSelect.value);
-      }
     }
 
     if (tpoQuickBtn) {
       tpoQuickBtn.addEventListener('click', () => {
-        const currentMode = this.chartEngine ? this.chartEngine.chartMode : 'FOOTPRINT';
-        const nextMode = currentMode === 'TPO' ? 'FOOTPRINT' : 'TPO';
-        updateChartModeUI(nextMode);
+        const active = this.workspaceManager.getActivePanel();
+        const cur = active ? active.chartMode : 'FOOTPRINT';
+        const next = (cur === 'TPO') ? 'FOOTPRINT' : 'TPO';
+        this.setChartMode(next);
       });
     }
 
-    // Layout Mode Split Switcher
-    const layoutSingleBtn = document.getElementById('layoutSingleBtn');
-    const layoutSplitBtn = document.getElementById('layoutSplitBtn');
-    if (layoutSingleBtn) {
-      layoutSingleBtn.addEventListener('click', () => {
-        if (this.chartEngine) this.chartEngine.setLayoutMode('SINGLE');
-      });
-    }
-    if (layoutSplitBtn) {
-      layoutSplitBtn.addEventListener('click', () => {
-        if (this.chartEngine) this.chartEngine.setLayoutMode('SPLIT');
-      });
-    }
-
-    // Footprint Style Selector (Profile Histogram vs Cluster)
+    // 5. Footprint Style
     const styleSelect = document.getElementById('footprintStyleSelect');
     if (styleSelect) {
       styleSelect.addEventListener('change', (e) => {
-        const style = e.target.value;
-        if (this.chartEngine) {
-          this.chartEngine.setFootprintStyle(style);
+        this.setFootprintStyle(e.target.value);
+      });
+    }
+
+    // 6. Workspace Layout Presets (1, 2H, 2V, 3, 4)
+    const layoutBtns = document.querySelectorAll('#workspaceLayoutGroup .layout-btn-pill');
+    layoutBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const layout = btn.getAttribute('data-layout');
+        if (layout && this.workspaceManager) {
+          this.workspaceManager.setLayout(layout);
+          layoutBtns.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+        }
+      });
+    });
+
+    // 7. Add Panel Button
+    const addPanelBtn = document.getElementById('addPanelBtn');
+    if (addPanelBtn) {
+      addPanelBtn.addEventListener('click', () => {
+        if (this.workspaceManager) {
+          this.workspaceManager.addPanel();
         }
       });
     }
 
-    // Liquidation Heatmap Switcher
-    const heatmapSelect = document.getElementById('heatmapSelect');
-    if (heatmapSelect) {
-      heatmapSelect.addEventListener('change', (e) => {
-        const isVisible = e.target.value === 'ON';
-        if (this.chartEngine) {
-          this.chartEngine.setLiquidationVisible(isVisible);
+    // 8. Big Trades Header Toggle Button
+    const btToggleBtn = document.getElementById('bigTradesToggleBtn');
+    if (btToggleBtn) {
+      btToggleBtn.addEventListener('click', () => {
+        this.bigTradesVisible = !this.bigTradesVisible;
+        btToggleBtn.classList.toggle('active', this.bigTradesVisible);
+        if (this.workspaceManager) {
+          this.workspaceManager.setBigTradesVisible(this.bigTradesVisible);
         }
       });
     }
 
-    // Unified Theme Switcher (Dark vs Light Sierra Mode)
+    // 9. Theme Switcher
     const applyTheme = (theme) => {
+      this.theme = theme;
       const appBody = document.getElementById('appBody');
       const themeSelect = document.getElementById('themeSelect');
       const themeToggleBtn = document.getElementById('themeToggleBtn');
@@ -296,12 +439,11 @@ class DepthflowApp {
         if (themeToggleBtn) themeToggleBtn.textContent = '🌙 Theme';
       }
       if (themeSelect) themeSelect.value = theme;
-      if (this.chartEngine) {
-        this.chartEngine.setTheme(theme);
+      if (this.workspaceManager) {
+        this.workspaceManager.setTheme(theme);
       }
     };
 
-    // Quick Theme Toggle Button in Header
     const themeToggleBtn = document.getElementById('themeToggleBtn');
     if (themeToggleBtn) {
       themeToggleBtn.addEventListener('click', () => {
@@ -311,20 +453,6 @@ class DepthflowApp {
       });
     }
 
-    // 12H / 24H Time Format Switcher in Header
-    const timeFormatToggleBtn = document.getElementById('timeFormatToggleBtn');
-    if (timeFormatToggleBtn) {
-      const currentFormat = this.chartEngine ? this.chartEngine.timeFormat : (localStorage.getItem('depthflow_time_format') || '12H');
-      timeFormatToggleBtn.textContent = `🕒 ${currentFormat}`;
-      timeFormatToggleBtn.addEventListener('click', () => {
-        if (this.chartEngine) {
-          const next = this.chartEngine.toggleTimeFormat();
-          timeFormatToggleBtn.textContent = `🕒 ${next}`;
-        }
-      });
-    }
-
-    // Theme Switcher in Settings Modal
     const themeSelect = document.getElementById('themeSelect');
     if (themeSelect) {
       themeSelect.addEventListener('change', (e) => {
@@ -332,15 +460,33 @@ class DepthflowApp {
       });
     }
 
-    // Feed Provider Select
+    // 10. 12H / 24H Time Format Switcher
+    const timeFormatToggleBtn = document.getElementById('timeFormatToggleBtn');
+    if (timeFormatToggleBtn) {
+      const currentFormat = localStorage.getItem('depthflow_time_format') || '12H';
+      timeFormatToggleBtn.textContent = `🕒 ${currentFormat}`;
+      timeFormatToggleBtn.addEventListener('click', () => {
+        const next = (timeFormatToggleBtn.textContent.includes('12H')) ? '24H' : '12H';
+        timeFormatToggleBtn.textContent = `🕒 ${next}`;
+        localStorage.setItem('depthflow_time_format', next);
+        if (this.workspaceManager) {
+          for (const panel of this.workspaceManager.panels.values()) {
+            if (panel.chartEngine) {
+              panel.chartEngine.timeFormat = next;
+              panel.chartEngine.resize();
+            }
+          }
+        }
+      });
+    }
+
+    // 11. Feed Provider Select
     const providerSelect = document.getElementById('providerSelect');
     const scenarioContainer = document.getElementById('scenarioContainer');
 
     if (providerSelect) {
       providerSelect.addEventListener('change', async (e) => {
         const providerName = e.target.value;
-        this._resetAnalytics();
-
         if (providerName === 'SimulatedFeed') {
           if (scenarioContainer) scenarioContainer.style.display = 'flex';
         } else {
@@ -352,12 +498,14 @@ class DepthflowApp {
           const ticks = await dukascopy.loadHistoricalTicks('2026-09-01', '2026-09-02');
           this.replayEngine.loadTicks(ticks);
         } else {
-          await this.registry.setActiveProvider(providerName, this.currentSymbol);
+          const active = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+          const sym = active ? active.symbol : 'EUR/USD';
+          await this.registry.setActiveProvider(providerName, sym);
         }
       });
     }
 
-    // Scenario Select
+    // 12. Scenario Select
     const scenarioSelect = document.getElementById('scenarioSelect');
     if (scenarioSelect) {
       scenarioSelect.addEventListener('change', (e) => {
@@ -368,7 +516,7 @@ class DepthflowApp {
       });
     }
 
-    // Replay Controls
+    // 13. Replay Controls
     const playBtn = document.getElementById('replayPlayBtn');
     const pauseBtn = document.getElementById('replayPauseBtn');
     const stepBtn = document.getElementById('replayStepBtn');
@@ -394,23 +542,7 @@ class DepthflowApp {
       });
     }
 
-    // Big Trades Header Toggle Button
-    const btToggleBtn = document.getElementById('bigTradesToggleBtn');
-    if (btToggleBtn) {
-      btToggleBtn.addEventListener('click', () => {
-        this.bigTradesVisible = !this.bigTradesVisible;
-        if (this.bigTradesVisible) {
-          btToggleBtn.classList.add('active');
-        } else {
-          btToggleBtn.classList.remove('active');
-        }
-        if (this.chartEngine) {
-          this.chartEngine.setBigTradesVisible(this.bigTradesVisible);
-        }
-      });
-    }
-
-    // Settings Modal
+    // 14. Settings Modal
     const openSettingsBtn = document.getElementById('openSettingsBtn');
     const closeSettingsBtn = document.getElementById('closeSettingsBtn');
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
@@ -431,35 +563,33 @@ class DepthflowApp {
           valueAreaPercent: va
         });
 
-        this.profileEngine.valueAreaPercent = va;
-
-        // Big Trades Configuration update
+        // Apply Big Trades Options
         const btMethodEl = document.getElementById('cfgBigTradesMethod');
         const btSensEl = document.getElementById('cfgBigTradesSensitivity');
         const btFloorEl = document.getElementById('cfgBigTradesMinFloor');
         const btFidelityEl = document.getElementById('cfgBigTradesFidelity');
 
-        if (this.bigTradesEngine && btMethodEl) {
+        if (btMethodEl && this.workspaceManager) {
           const method = btMethodEl.value;
           const sens = parseFloat(btSensEl ? btSensEl.value : 2.5);
           const floor = parseFloat(btFloorEl ? btFloorEl.value : 25000);
           const fidelity = btFidelityEl ? btFidelityEl.value : 'BROKER_VOLUME';
 
-          this.bigTradesEngine.setOptions({
-            method: method,
-            madMultiplier: sens,
-            stdDevMultiplier: sens,
-            percentileThreshold: Math.max(0.90, Math.min(0.999, 1 - (sens * 0.008))),
-            minVolumeFloor: floor,
-            fidelityMode: fidelity
-          });
-
-          // Re-evaluate on currently loaded candles and refresh chart series
-          const allCandles = this.aggregator.getAllCandles();
-          if (allCandles.length > 0) {
-            this.bigTradesEngine.processCandles(allCandles);
-            if (this.chartEngine) {
-              this.chartEngine.setCandles(allCandles);
+          for (const panel of this.workspaceManager.panels.values()) {
+            if (panel.bigTradesEngine) {
+              panel.bigTradesEngine.setOptions({
+                method: method,
+                madMultiplier: sens,
+                stdDevMultiplier: sens,
+                percentileThreshold: Math.max(0.90, Math.min(0.999, 1 - (sens * 0.008))),
+                minVolumeFloor: floor,
+                fidelityMode: fidelity
+              });
+              const allCandles = panel.aggregator.getAllCandles();
+              if (allCandles.length > 0) {
+                panel.bigTradesEngine.processCandles(allCandles);
+                if (panel.chartEngine) panel.chartEngine.setCandles(allCandles);
+              }
             }
           }
         }
@@ -470,8 +600,12 @@ class DepthflowApp {
 
         // Apply Liquidation Heatmap overlay on Save
         const heatmap = document.getElementById('heatmapSelect')?.value || 'ON';
-        if (this.chartEngine) {
-          this.chartEngine.setLiquidationVisible(heatmap === 'ON');
+        if (this.workspaceManager) {
+          for (const panel of this.workspaceManager.panels.values()) {
+            if (panel.chartEngine) {
+              panel.chartEngine.setLiquidationVisible(heatmap === 'ON');
+            }
+          }
         }
 
         settingsModal.classList.add('hidden');
@@ -479,198 +613,40 @@ class DepthflowApp {
     }
   }
 
-  _isSymbolMatch(sym1, sym2) {
-    if (!sym1 || !sym2) return false;
-    const s1 = sym1.replace(/[^a-zA-Z]/g, '').toUpperCase();
-    const s2 = sym2.replace(/[^a-zA-Z]/g, '').toUpperCase();
-    return s1 === s2 || s1.startsWith(s2) || s2.startsWith(s1);
-  }
-
   async switchSymbol(sym) {
-    if (!sym) return;
-    this.currentSymbol = sym;
-
-    const symSelect = document.getElementById('symbolSelect');
-    if (symSelect) symSelect.value = sym;
-
-    document.querySelectorAll('.wl-row').forEach(r => {
-      if (r.getAttribute('data-symbol') === sym) {
-        r.classList.add('active');
-      } else {
-        r.classList.remove('active');
-      }
-    });
-
-    const legSym = document.getElementById('legendSymbol');
-    if (legSym) legSym.textContent = sym;
-
-    console.log(`[OdeerflowApp] Switched active symbol to: ${sym}`);
-    this.raw1mCandles = [];
-    this._resetAnalytics();
-
-    if (this.chartEngine) {
-      this.chartEngine.setSymbol(this.currentSymbol);
-    }
-
-    const activeProvider = this.registry.getActiveProvider();
-    if (activeProvider) {
-      await this.registry.setActiveProvider(activeProvider.name, this.currentSymbol, this.currentTimeframeStr);
+    if (!sym || !this.workspaceManager) return;
+    const active = this.workspaceManager.getActivePanel();
+    if (active) {
+      active.setSymbol(sym);
+      this._syncActivePanelToHUD(active);
     }
   }
 
   setTimeframe(timeframeMs, timeframeStr) {
-    this.currentTimeframeMs = timeframeMs;
-    this.currentTimeframeStr = timeframeStr;
-    console.log(`[OdeerflowApp] Switching timeframe to ${timeframeStr} (${timeframeMs}ms)`);
-
-    if (this.bigTradesEngine) {
-      this.bigTradesEngine.setTimeframe(timeframeStr, timeframeMs);
-    }
-
-    if (this.tpoEngine) {
-      this.tpoEngine.setTimeframe(timeframeStr);
-    }
-
-    const legTf = document.getElementById('legendTf');
-    if (legTf) legTf.textContent = timeframeStr;
-
-    this._resetAnalytics();
-
-    // Clear chart canvas & series immediately
-    if (this.chartEngine) {
-      this.chartEngine.setTimeframe(timeframeMs, timeframeStr);
-      this.chartEngine.clear();
-    }
-
-    this.registry.setTimeframe(timeframeStr);
-  }
-
-  _getTpoCandles() {
-    if (this.raw1mCandles && this.raw1mCandles.length >= 10) {
-      return this.raw1mCandles;
-    }
-    return this.aggregator.getAllCandles();
-  }
-
-  _handleTpo1mCandles(candles) {
-    if (!Array.isArray(candles) || candles.length === 0) return;
-    if (candles[0].symbol && !this._isSymbolMatch(candles[0].symbol, this.currentSymbol)) {
-      return;
-    }
-    console.log(`[OdeerflowApp] Received ${candles.length} dedicated 1m TPO baseline candles for ${this.currentSymbol}`);
-    this.raw1mCandles = [...candles].sort((a, b) => a.startTime - b.startTime);
-    if (this.tpoEngine) {
-      const sessions = this.tpoEngine.processCandles(this.raw1mCandles, this.currentSymbol, this.currentTimeframeStr);
-      if (this.chartEngine) {
-        this.chartEngine.setTpoSessions(sessions);
-      }
+    if (!timeframeStr || !this.workspaceManager) return;
+    const active = this.workspaceManager.getActivePanel();
+    if (active) {
+      active.setTimeframe(timeframeStr);
+      this._syncActivePanelToHUD(active);
     }
   }
 
-  _processInitialCandles(candles) {
-    if (!Array.isArray(candles) || candles.length === 0) return;
-    if (candles[0].symbol && !this._isSymbolMatch(candles[0].symbol, this.currentSymbol)) {
-      return;
-    }
-    console.log(`[OdeerflowApp] Hydrating ${candles.length} MT5 candles into chart and analytics for ${this.currentSymbol}`);
-
-    this._resetAnalytics();
-    this.aggregator.loadCandles(candles);
-    this.profileEngine.loadFromCandles(candles);
-
-    // CRITICAL: Only populate raw1mCandles from display candles if on 1m! Never pollute with HTF bars.
-    if (this.currentTimeframeStr === '1m') {
-      this.raw1mCandles = [...candles];
-    }
-
-    const profileData = this.profileEngine.calculateProfile();
-    if (this.profileRenderer) {
-      this.profileRenderer.render(profileData);
-    }
-    this._updateProfileStatsUI(profileData);
-
-    const allCandles = this.aggregator.getAllCandles();
-    if (this.bigTradesEngine) {
-      this.bigTradesEngine.processCandles(allCandles);
-    }
-    if (this.chartEngine) {
-      this.chartEngine.setCandles(allCandles);
-    }
-
-    if (this.tpoEngine) {
-      const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
-      if (this.chartEngine) {
-        this.chartEngine.setTpoSessions(sessions);
-      }
-    }
-
-    if (allCandles.length > 0) {
-      const lastC = allCandles[allCandles.length - 1];
-      this._updateLegend(lastC);
-      this._updateWatchlist(this.currentSymbol, lastC.close);
-    }
-
-    // Initialize Delta / CVD with the hydrated bars
-    this.deltaEngine.clear();
-    let cumulativeCvd = 0;
-    allCandles.forEach((c) => {
-      const cvdRecord = this.deltaEngine.processCandle(c);
-      if (cvdRecord) {
-        cumulativeCvd = cvdRecord.cvd;
-        if (this.chartEngine) {
-          this.chartEngine.updateCvd(c.startTime, cumulativeCvd);
-        }
-      }
-    });
-
-    const cvdValEl = document.getElementById('cvdVal');
-    if (cvdValEl) {
-      cvdValEl.textContent = `${cumulativeCvd > 0 ? '+' : ''}${cumulativeCvd}`;
-      cvdValEl.style.color = cumulativeCvd >= 0 ? '#089981' : '#F23645';
-    }
-
-    const signalsContainer = document.getElementById('signalsFeed');
-    if (signalsContainer) {
-      signalsContainer.innerHTML = `<div class="signal-item bullish">✓ MT5 Broker Live Feed Connected: ${candles.length} recent bars loaded. Streaming live market ticks...</div>`;
+  setChartMode(mode) {
+    if (!mode || !this.workspaceManager) return;
+    const active = this.workspaceManager.getActivePanel();
+    if (active) {
+      active.setChartMode(mode);
+      this._syncActivePanelToHUD(active);
     }
   }
 
-  _processHistoricalChunk(candles) {
-    if (!Array.isArray(candles) || candles.length === 0) return;
-    if (candles[0].symbol && !this._isSymbolMatch(candles[0].symbol, this.currentSymbol)) return;
-
-    console.log(`[OdeerflowApp] Prepending ${candles.length} historical bars for ${this.currentSymbol}`);
-    this.aggregator.prependCandles(candles);
-    if (this.currentTimeframeStr === '1m' && this.raw1mCandles) {
-      this.raw1mCandles = [...candles, ...this.raw1mCandles].sort((a, b) => a.startTime - b.startTime);
+  setFootprintStyle(style) {
+    if (!style || !this.workspaceManager) return;
+    const active = this.workspaceManager.getActivePanel();
+    if (active) {
+      active.setFootprintStyle(style);
+      this._syncActivePanelToHUD(active);
     }
-    const allCandles = this.aggregator.getAllCandles();
-    if (this.deltaEngine) {
-      this.deltaEngine.processCandles(allCandles);
-    }
-    if (this.bigTradesEngine) {
-      this.bigTradesEngine.processCandles(allCandles);
-    }
-    if (this.chartEngine) {
-      this.chartEngine.prependCandles(allCandles);
-    }
-    if (this.tpoEngine) {
-      const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
-      if (this.chartEngine) {
-        this.chartEngine.setTpoSessions(sessions);
-      }
-    }
-  }
-
-  _isPriceReasonableForSymbol(symbol, price) {
-    if (!price || price <= 0 || isNaN(price)) return false;
-    const s = (symbol || '').toUpperCase();
-    if (s.includes('BTC')) return price > 10000 && price < 500000;
-    if (s.includes('ETH')) return price > 500 && price < 20000;
-    if (s.includes('XAU') || s.includes('GOLD')) return price > 500 && price < 15000;
-    if (s.includes('JPY')) return price > 50 && price < 500;
-    // Standard Forex (EUR/USD, GBP/USD, etc.)
-    return price > 0.1 && price < 10.0;
   }
 
   _updateWatchlist(rawSymbol, price) {
@@ -709,165 +685,14 @@ class DepthflowApp {
       pctEl.className = `col-pct ${isPos ? 'pos' : 'neg'}`;
     }
 
-    if (matchSym === this.currentSymbol) {
+    const active = this.workspaceManager ? this.workspaceManager.getActivePanel() : null;
+    if (active && matchSym === active.symbol) {
       const headerPrice = document.getElementById('headerLivePrice');
       if (headerPrice) {
         headerPrice.textContent = formattedPrice;
         headerPrice.style.color = isPos ? 'var(--buy-green)' : 'var(--sell-red)';
       }
     }
-  }
-
-  _updateLegend(candle) {
-    if (!candle) return;
-    const decimals = this.currentSymbol.includes('JPY') ? 3 : (this.currentSymbol.includes('BTC') ? 1 : (this.currentSymbol.includes('ETH') || this.currentSymbol.includes('XAU') ? 2 : 5));
-    const oEl = document.getElementById('legendO');
-    const hEl = document.getElementById('legendH');
-    const lEl = document.getElementById('legendL');
-    const cEl = document.getElementById('legendC');
-    const chgEl = document.getElementById('legendChg');
-
-    if (oEl) oEl.textContent = Number(candle.open).toFixed(decimals);
-    if (hEl) hEl.textContent = Number(candle.high).toFixed(decimals);
-    if (lEl) lEl.textContent = Number(candle.low).toFixed(decimals);
-    if (cEl) cEl.textContent = Number(candle.close).toFixed(decimals);
-
-    if (chgEl && candle.open > 0) {
-      const diff = candle.close - candle.open;
-      const pct = (diff / candle.open) * 100;
-      const isPos = diff >= 0;
-      chgEl.textContent = `${isPos ? '+' : ''}${pct.toFixed(2)}%`;
-      chgEl.className = `legend-chg ${isPos ? 'pos' : 'neg'}`;
-    }
-  }
-
-  _processMarketEvent(event) {
-    if (!event) return;
-
-    // Update real-time ticker in watchlist for any known symbol
-    this._updateWatchlist(event.symbol, event.price);
-
-    if (!this._isSymbolMatch(event.symbol, this.currentSymbol)) return;
-
-    // Safety checks against in-flight cross-contamination
-    if (!this._isPriceReasonableForSymbol(this.currentSymbol, event.price)) return;
-
-    // Record Tick for Diagnostics
-    this.diagnosticsDrawer.recordTick();
-
-    // 1. Adaptive Classification
-    const aggressorResult = this.classifier.classify(event);
-    this.diagnosticsDrawer.updateAggressorMode(aggressorResult.method);
-
-    // 2. Volume Profile Update
-    this.profileEngine.addEvent(event.price, event.size);
-    const profileData = this.profileEngine.calculateProfile();
-    if (this.profileRenderer) {
-      this.profileRenderer.render(profileData);
-    }
-    this._updateProfileStatsUI(profileData);
-
-    // 3. Live Large Trade Execution Detection
-    if (this.bigTradesEngine) {
-      this.bigTradesEngine.processLiveTick(event, aggressorResult);
-    }
-
-    // 4. Footprint Candle Aggregation & TV Rendering
-    const activeCandle = this.aggregator.processEvent(event, aggressorResult);
-    if (this.bigTradesEngine) {
-      this.bigTradesEngine.processCandle(activeCandle);
-    }
-    if (this.chartEngine) {
-      if (event.price) this.chartEngine.onLiveTick(event.price);
-      this.chartEngine.updateCandle(activeCandle);
-    }
-    this._updateLegend(activeCandle);
-
-    // Maintain raw 1m candles for TPO even if chart is on another timeframe
-    if (event.price && this.raw1mCandles) {
-      const m1Time = Math.floor((event.timestamp || Date.now()) / 60000) * 60000;
-      let lastM1 = this.raw1mCandles[this.raw1mCandles.length - 1];
-      if (!lastM1 || m1Time >= (lastM1.endTime || lastM1.startTime + 60000)) {
-        lastM1 = {
-          startTime: m1Time,
-          endTime: m1Time + 60000,
-          open: event.price,
-          high: event.price,
-          low: event.price,
-          close: event.price,
-          totalVolume: event.size || 1,
-          cells: []
-        };
-        this.raw1mCandles.push(lastM1);
-      } else {
-        if (event.price > lastM1.high) lastM1.high = event.price;
-        if (event.price < lastM1.low) lastM1.low = event.price;
-        lastM1.close = event.price;
-        lastM1.totalVolume += (event.size || 1);
-      }
-    }
-
-    // Dynamic Live TPO Profile Refresh (Throttled every 3.5s)
-    if (this.tpoEngine && (!this._lastTpoUpdate || Date.now() - this._lastTpoUpdate > 3500)) {
-      this._lastTpoUpdate = Date.now();
-      const sessions = this.tpoEngine.processCandles(this._getTpoCandles(), this.currentSymbol, this.currentTimeframeStr);
-      if (this.chartEngine) {
-        this.chartEngine.setTpoSessions(sessions);
-      }
-    }
-
-    // 4. CVD & Delta Calculation
-    const cvdRecord = this.deltaEngine.processCandle(activeCandle);
-    if (this.chartEngine) {
-      this.chartEngine.updateCvd(cvdRecord.timestamp, cvdRecord.cvd);
-    }
-    const cvdValEl = document.getElementById('cvdVal');
-    if (cvdValEl) {
-      cvdValEl.textContent = `${cvdRecord.cvd > 0 ? '+' : ''}${cvdRecord.cvd}`;
-      cvdValEl.style.color = cvdRecord.cvd >= 0 ? '#089981' : '#F23645';
-    }
-
-    // 5. Pattern Detection & Order-Flow Signals
-    const signals = this.patternDetector.detectPatterns(activeCandle);
-    if (signals.length > 0) {
-      this._appendSignalsUI(signals);
-    }
-
-    // 6. Update Diagnostics
-    this.diagnosticsDrawer.updateDiagnostics(this.registry.getDiagnostics());
-  }
-
-  _resetAnalytics() {
-    this.profileEngine.reset();
-    if (this.profileRenderer) {
-      this.profileRenderer.clear();
-    }
-    this.deltaEngine = new DeltaEngine();
-    this.aggregator = new FootprintAggregator({ timeframeMs: this.currentTimeframeMs, symbol: this.currentSymbol });
-    if (this.bigTradesEngine) {
-      this.bigTradesEngine.clear();
-    }
-    if (this.chartEngine) {
-      this.chartEngine.clear();
-    }
-  }
-
-  _updateProfileStatsUI(profileData) {
-    const pocEl = document.getElementById('pocDisplay');
-    const vahEl = document.getElementById('vahDisplay');
-    const valEl = document.getElementById('valDisplay');
-    const totalVolEl = document.getElementById('totalVolDisplay');
-
-    const s = (this.currentSymbol || '').toUpperCase();
-    const isCrypto = s.includes('BTC') || s.includes('ETH');
-    const isGold = s.includes('XAU') || s.includes('GOLD');
-    const isJpy = s.includes('JPY');
-    const decimals = isCrypto || isGold ? 2 : (isJpy ? 3 : 5);
-
-    if (pocEl) pocEl.textContent = profileData.poc ? profileData.poc.toFixed(decimals) : '--';
-    if (vahEl) vahEl.textContent = profileData.vah ? profileData.vah.toFixed(decimals) : '--';
-    if (valEl) valEl.textContent = profileData.val ? profileData.val.toFixed(decimals) : '--';
-    if (totalVolEl) totalVolEl.textContent = profileData.totalVolume || 0;
   }
 
   _updateStatusUI(statusInfo) {
@@ -895,39 +720,14 @@ class DepthflowApp {
     if (counter) counter.textContent = `${state.currentIndex} / ${state.totalTicks} Ticks`;
     if (progress) progress.value = state.progressPercent;
   }
-
-  _appendSignalsUI(signals) {
-    const feed = document.getElementById('signalsFeed');
-    if (!feed) return;
-
-    signals.forEach(sig => {
-      const item = document.createElement('div');
-      item.className = 'signal-item';
-
-      if (sig.type.includes('ABSORPTION')) {
-        item.classList.add('absorption');
-        item.innerHTML = `<strong>⚡ ABSORPTION:</strong> ${sig.type} at ${sig.price.toFixed(2)} (Vol: ${sig.volume})`;
-      } else if (sig.type.includes('IMBALANCE')) {
-        item.classList.add('imbalance');
-        item.innerHTML = `<strong>⚖ IMBALANCE:</strong> ${sig.type} at ${sig.price ? sig.price.toFixed(2) : 'Multiple'}`;
-      } else if (sig.type.includes('SWEEP')) {
-        item.classList.add('sweep');
-        item.innerHTML = `<strong>🎯 SWEEP:</strong> ${sig.type} at ${sig.price.toFixed(2)} (${sig.rejectionPips} pips rejection)`;
-      } else {
-        item.textContent = `${sig.type} detected`;
-      }
-
-      feed.insertBefore(item, feed.firstChild);
-      if (feed.children.length > 20) feed.removeChild(feed.lastChild);
-    });
-  }
 }
 
-// Guaranteed App Bootstrap (resilient to DOMContentLoaded timing on refresh)
+// Guaranteed App Bootstrap
 function startDepthflow() {
   if (!window.depthflowApp) {
     window.depthflowApp = new DepthflowApp();
     window.odeerflowApp = window.depthflowApp; // Backward compatibility alias
+    window.app = window.depthflowApp;
   }
 }
 

@@ -8,21 +8,60 @@ import { AggressorSide, VolumeFidelity } from '../data/NormalizedMarketEvent.js'
 
 export function getTickSize(symbol, price, timeframeMs = 60000) {
   const s = (symbol || '').toUpperCase();
-  let baseTick = 0.00005; // 0.5 pip for pristine Forex footprint ladders
-  if (s.includes('BTC') || price > 10000) baseTick = 5.0; // $5 buckets for BTC
-  else if (s.includes('ETH') || price > 1000) baseTick = 0.5;
-  else if (s.includes('XAU') || s.includes('GOLD') || price > 500) baseTick = 0.2;
-  else if (s.includes('JPY')) baseTick = 0.005;
+  const isBtc = s.includes('BTC') || price > 10000;
+  const isEth = s.includes('ETH') || price > 1000;
+  const isGold = s.includes('XAU') || s.includes('GOLD') || price > 500;
+  const isJpy = s.includes('JPY');
 
+  if (isBtc) {
+    let mult = 1;
+    if (timeframeMs >= 86400000) mult = 50;      // 1D ($250)
+    else if (timeframeMs >= 14400000) mult = 20; // 4h ($100)
+    else if (timeframeMs >= 3600000) mult = 10;  // 1h ($50)
+    else if (timeframeMs >= 1800000) mult = 6;   // 30m ($30)
+    else if (timeframeMs >= 900000) mult = 4;    // 15m ($20)
+    else if (timeframeMs >= 300000) mult = 2;    // 5m ($10)
+    return 5.0 * mult;
+  }
+
+  if (isEth) {
+    let mult = 1;
+    if (timeframeMs >= 86400000) mult = 40;
+    else if (timeframeMs >= 14400000) mult = 15;
+    else if (timeframeMs >= 3600000) mult = 8;
+    else if (timeframeMs >= 1800000) mult = 4;
+    else if (timeframeMs >= 900000) mult = 2;
+    return 0.5 * mult;
+  }
+
+  if (isGold) {
+    let mult = 1;
+    if (timeframeMs >= 86400000) mult = 25;
+    else if (timeframeMs >= 14400000) mult = 10;
+    else if (timeframeMs >= 3600000) mult = 5;
+    else if (timeframeMs >= 1800000) mult = 3;
+    else if (timeframeMs >= 900000) mult = 1.5;
+    return 0.2 * mult;
+  }
+
+  if (isJpy) {
+    let mult = 1;
+    if (timeframeMs >= 86400000) mult = 20;
+    else if (timeframeMs >= 14400000) mult = 8;
+    else if (timeframeMs >= 3600000) mult = 4;
+    else if (timeframeMs >= 1800000) mult = 2;
+    return 0.005 * mult;
+  }
+
+  // Forex (EUR/USD, GBP/USD, AUD/USD, etc.): 0.5 pip base gives 6-8 spacious rows for typical candles
   let mult = 1;
-  if (timeframeMs >= 86400000) mult = 50;      // 1D
-  else if (timeframeMs >= 14400000) mult = 20; // 4h
-  else if (timeframeMs >= 3600000) mult = 10;  // 1h
-  else if (timeframeMs >= 1800000) mult = 6;   // 30m
-  else if (timeframeMs >= 900000) mult = 4;    // 15m
-  else if (timeframeMs >= 300000) mult = 2;    // 5m
-
-  return baseTick * mult;
+  if (timeframeMs >= 86400000) mult = 20;      // 1D: 0.00100 (10 pips)
+  else if (timeframeMs >= 14400000) mult = 8;  // 4h: 0.00040 (4 pips)
+  else if (timeframeMs >= 3600000) mult = 4;   // 1h: 0.00020 (2 pips)
+  else if (timeframeMs >= 1800000) mult = 2;   // 30m: 0.00010 (1 pip)
+  else if (timeframeMs >= 900000) mult = 1;    // 15m: 0.00005 (0.5 pip) -> 6-8 rows
+  else if (timeframeMs >= 300000) mult = 0.6;  // 5m: 0.00003 (0.3 pip) -> 6-8 rows
+  return 0.00005 * mult;
 }
 
 export class FootprintCell {

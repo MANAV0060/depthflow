@@ -67,6 +67,8 @@ export class MT5Adapter extends ProviderAdapter {
   subscribe(symbol, timeframe) {
     super.subscribe(symbol);
     this.symbol = symbol;
+    if (!this.subscribedSymbols) this.subscribedSymbols = new Set();
+    this.subscribedSymbols.add(symbol);
     if (timeframe) this.timeframe = timeframe;
     const s = symbol.toUpperCase();
     if (s.includes('BTC')) this.lastPrice = 79500.0;
@@ -85,6 +87,27 @@ export class MT5Adapter extends ProviderAdapter {
     }
   }
 
+  unsubscribe(symbol) {
+    if (this.subscribedSymbols) this.subscribedSymbols.delete(symbol);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        action: 'unsubscribe',
+        symbol: symbol
+      }));
+    }
+  }
+
+  isSubscribed(symbol) {
+    if (!symbol) return false;
+    if (this._isSymbolMatch(symbol, this.symbol)) return true;
+    if (this.subscribedSymbols) {
+      for (const s of this.subscribedSymbols) {
+        if (this._isSymbolMatch(symbol, s)) return true;
+      }
+    }
+    return false;
+  }
+
   async connect() {
     this._setStatus(ConnectionStatus.CONNECTING);
     this._connectSocket();
@@ -101,11 +124,16 @@ export class MT5Adapter extends ProviderAdapter {
           this.fallbackTimer = null;
         }
         this._setStatus(ConnectionStatus.CONNECTED);
-        this.ws.send(JSON.stringify({
-          action: 'subscribe',
-          symbol: this.symbol,
-          timeframe: this.timeframe
-        }));
+        const symbolsToSub = (this.subscribedSymbols && this.subscribedSymbols.size > 0)
+          ? Array.from(this.subscribedSymbols)
+          : [this.symbol];
+        for (const sym of symbolsToSub) {
+          this.ws.send(JSON.stringify({
+            action: 'subscribe',
+            symbol: sym,
+            timeframe: this.timeframe
+          }));
+        }
       };
 
       this.ws.onmessage = (msg) => {
@@ -116,8 +144,8 @@ export class MT5Adapter extends ProviderAdapter {
             return;
           }
 
-          if (data.symbol && !this._isSymbolMatch(data.symbol, this.symbol)) {
-            return; // Ignore in-flight data from previous symbol
+          if (data.symbol && !this.isSubscribed(data.symbol)) {
+            return; // Ignore data from unsubscribed symbols
           }
 
           if (data.type === 'initial_candles' && Array.isArray(data.candles)) {
@@ -167,7 +195,7 @@ export class MT5Adapter extends ProviderAdapter {
           if (price > 0) this.lastPrice = price;
 
           const normEvent = new NormalizedMarketEvent({
-            symbol: this.symbol, // Align with active subscription
+            symbol: data.symbol || this.symbol,
             timestamp: data.timestamp || Date.now(),
             eventType: EventType.QUOTE_UPDATE,
             price: this.lastPrice,
